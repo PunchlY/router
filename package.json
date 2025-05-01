@@ -1,0 +1,20 @@
+{
+  "name": "router",
+  "type": "module",
+  "version": "1.0.0",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "latest",
+    "reflect-metadata": "latest"
+  },
+  "module": "index.ts",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
