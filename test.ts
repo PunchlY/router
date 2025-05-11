@@ -1,4 +1,4 @@
-import { Mount, Route, RequestUrl, Params, Query, Store, Hook, Server, Injectable, Use, Controller } from './decorators';
+import { Mount, Route, RequestUrl, Params, Query, Store, Hook, Server, Injectable, Use, Controller, RawResponse } from './decorators';
 import { routes } from './compose';
 
 @Injectable()
@@ -36,6 +36,7 @@ class Logger {
 @Mount('api', API)
 @Controller()
 class Main {
+
     @Mount('/')
     index = 'Hi';
 
@@ -53,11 +54,25 @@ class Main {
 
     @Route('GET', '/stream')
     *[Symbol.iterator]() {
-        const controller: ReadableStreamDefaultController = yield;
         yield 'A';
         yield 'B';
-        controller.close();
         yield 'C';
+    }
+
+    @Hook('mapResponse', { headers: { 'content-type': 'text/html;charset=UTF-8' } })
+    map(response: RawResponse) {
+        if (typeof response === 'object' && response !== null && Object.hasOwn(response, '$$typeof') && Reflect.get(response, '$$typeof') === Symbol.for('react.transitional.element')) {
+            return String(response);
+        }
+    }
+    @Route('GET', '/jsx')
+    jsx() {
+        return {
+            $$typeof: Symbol.for('react.transitional.element'),
+            toString() {
+                return '<h1>JSX</h1>';
+            }
+        };
     }
 
 }

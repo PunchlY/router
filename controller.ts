@@ -4,7 +4,7 @@ import { getParamTypes, type ParamTypes } from './service';
 import { getMethodType, getStack, type MethodType } from './util';
 import type { HeadersInit } from 'bun';
 
-const RequestLifecycleHook = ['beforeHandle', 'afterHandle'] as const;
+const RequestLifecycleHook = ['beforeHandle', 'mapResponse', 'afterHandle'] as const;
 type RequestLifecycleHook = typeof RequestLifecycleHook[number];
 
 type HTTPMethod = import('bun').RouterTypes.HTTPMethod;

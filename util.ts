@@ -1,4 +1,36 @@
 
+const AsyncFunction = async function () { }.constructor as FunctionConstructor;
+const AsyncGeneratorFunction = async function* () { }.constructor as AsyncGeneratorFunctionConstructor;
+const GeneratorFunction = function* () { }.constructor as GeneratorFunctionConstructor;
+type MethodType = ReturnType<typeof getMethodType>;
+
+type StreamLike = IterableIterator<string | ArrayBuffer | ArrayBufferView<ArrayBufferLike>> | AsyncIterableIterator<string | ArrayBuffer | ArrayBufferView<ArrayBufferLike>>;
+class Stream {
+    #firstValue;
+    #values;
+    #used = false;
+    constructor(firstValue: string | ArrayBuffer | ArrayBufferView, values: StreamLike) {
+        this.#firstValue = firstValue;
+        this.#values = values;
+    }
+    *[Symbol.iterator]() {
+        if (this.#used)
+            return;
+        if (!(this.#values instanceof GeneratorFunction.prototype))
+            throw new TypeError('The provided value is not an instance of a generator function.');
+        this.#used = true;
+        yield this.#firstValue;
+        yield* this.#values;
+    }
+    async *[Symbol.asyncIterator]() {
+        if (this.#used)
+            return;
+        this.#used = true;
+        yield this.#firstValue;
+        yield* this.#values;
+    }
+}
+
 function newResponse(data: unknown, init?: {
     headers?: Record<string, string>;
     status?: number;
@@ -11,15 +43,23 @@ function newResponse(data: unknown, init?: {
             if (data instanceof Response) {
                 const newHeaders = new Headers(data.headers);
                 for (const name in init?.headers)
-                    newHeaders.set(name, init.headers[name]);
+                    newHeaders.set(name, init.headers[name]!);
                 return new Response(data.body, {
                     headers: newHeaders,
                     status: init?.status ?? data.status,
                     statusText: init?.statusText ?? data.statusText,
                 });
             }
-            if (data === null || data instanceof Blob || data instanceof ReadableStream || data instanceof FormData || data instanceof ArrayBuffer || ArrayBuffer.isView(data) || data instanceof URLSearchParams || data instanceof FormData)
-                return new Response(data, init);
+            if (data === null
+                || data instanceof Blob
+                || data instanceof ReadableStream
+                || data instanceof FormData
+                || data instanceof ArrayBuffer
+                || data instanceof URLSearchParams
+                || data instanceof FormData
+                || data instanceof Stream
+                || ArrayBuffer.isView(data))
+                return new Response(data as any, init);
             break;
     }
     return Response.json(data, init);
@@ -29,7 +69,7 @@ function parseQuery(search: URLSearchParams) {
     const queries: Record<string, string | string[]> = {};
     for (const name of search.keys()) {
         const values = search.getAll(name);
-        queries[name] = values.length === 1 ? values[0] : values;
+        queries[name] = values.length === 1 ? values[0]! : values;
     }
     return queries;
 }
@@ -39,10 +79,10 @@ async function parseBody(request: Request) {
         case 'application/x-www-form-urlencoded':
             return parseQuery(new URLSearchParams(await request.text()));
         case 'multipart/form-data': {
-            const body: Record<string, ReturnType<FormData['getAll']> | ReturnType<FormData['getAll']>[number]> = {}, form = await request.formData();
+            const body: Record<string, ReturnType<Awaited<ReturnType<Response['formData']>>['getAll']> | ReturnType<Awaited<ReturnType<Response['formData']>>['getAll']>[number]> = {}, form = await request.formData();
             for (const key of form.keys()) {
                 const value = form.getAll(key);
-                body[key] = value.length === 1 ? value[0] : value;
+                body[key] = value.length === 1 ? value[0]! : value;
             }
             return body;
         }
@@ -56,10 +96,6 @@ async function parseBody(request: Request) {
     throw new Error('Unsupported content type');
 };
 
-const AsyncFunction = async function () { }.constructor as FunctionConstructor;
-const AsyncGeneratorFunction = async function* () { }.constructor as AsyncGeneratorFunctionConstructor;
-const GeneratorFunction = function* () { }.constructor as GeneratorFunctionConstructor;
-type MethodType = ReturnType<typeof getMethodType>;
 function getMethodType(value: unknown) {
     if (typeof value !== 'function')
         throw new TypeError();
@@ -81,7 +117,7 @@ function getStack() {
     return match[0];
 }
 
-export { newResponse };
+export { type StreamLike, Stream, newResponse };
 export { parseBody, parseQuery };
 export { getMethodType, type MethodType };
 export { getStack };

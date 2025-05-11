@@ -2,22 +2,23 @@ import type { BunRequest, Server, RouterTypes, HTMLBundle } from 'bun';
 import { scheduler } from 'node:timers/promises';
 import { type Handler, getController } from './controller';
 import { construct } from './service';
-import { parseBody, newResponse, parseQuery } from './util';
+import { parseBody, newResponse, parseQuery, Stream, type StreamLike } from './util';
 import { Parse } from '@sinclair/typebox/value';
 import { TypeGuard } from '@sinclair/typebox';
 
 interface Context extends BunRequest {
     _server: Server;
     _fulfilled: boolean;
-    _response?: Response;
-    _url?: URL;
-    _query?: Record<string, unknown>;
-    _body?: unknown;
     _set: {
         readonly headers: Record<string, string>;
         status?: number;
         statusText?: string;
     };
+    _rawResponse?: unknown;
+    _response?: Response;
+    _url?: URL;
+    _query?: Record<string, unknown>;
+    _body?: unknown;
     _store?: Record<string, any>;
 }
 
@@ -31,12 +32,12 @@ function getMeta({ controller: { target }, propertyKey, paramtypes, init, type }
                 return { value: construct(type) };
             return type;
         }),
-        ...init,
+        init,
         isGenerator: type === 'GeneratorFunction' || type === 'AsyncGeneratorFunction',
     };
 }
 
-async function onHandle(ctx: Context, { instance, propertyKey, paramtypes, isGenerator, headers, status, statusText }: HandlerMeta) {
+async function mapParams(ctx: Context, paramtypes: HandlerMeta['paramtypes']) {
     const params: any[] = [];
     for (const type of paramtypes) {
         if ('value' in type) {
@@ -52,6 +53,9 @@ async function onHandle(ctx: Context, { instance, propertyKey, paramtypes, isGen
                 } break;
                 case 'server': {
                     value = ctx._server;
+                } break;
+                case 'rawResponse': {
+                    value = ctx._rawResponse;
                 } break;
                 case 'response': {
                     value = ctx._response;
@@ -91,72 +95,40 @@ async function onHandle(ctx: Context, { instance, propertyKey, paramtypes, isGen
             params.push(value);
         }
     }
-    if (isGenerator) {
-        const res = instance[propertyKey](...params);
-        const { value, done } = await (res as Generator | AsyncGenerator).next();
-        for (const name in headers) {
-            ctx._set.headers[name] = headers[name]!;
-        }
-        if (typeof status === 'number')
-            ctx._set.status = status;
-        if (typeof statusText === 'string')
-            ctx._set.statusText = statusText;
-        if (done) {
-            ctx._response = newResponse(value, ctx._set);
+    return params;
+}
+
+async function onHandle(ctx: Context, handlerMeta: HandlerMeta[]) {
+    let fulfilled = false;
+    for (const { instance, propertyKey, paramtypes, isGenerator, init } of handlerMeta) {
+        const res = await instance[propertyKey](...await mapParams(ctx, paramtypes));
+        if (isGenerator) {
+            const { value, done } = await (res as StreamLike).next();
+            ctx._rawResponse = done ? value : new Stream(value, res as StreamLike);
+        } else if (typeof res === 'undefined') {
+            continue;
         } else {
-            // ctx._response = new Response(async function* () { yield value, yield* (res as Generator | AsyncGenerator); } as any, ctx._set);
-
-            ctx._set.headers['transfer-encoding'] ||= 'chunked';
-            ctx._set.headers['content-type'] ||= 'text/event-stream;charset=utf-8';
-
-            let end = false;
-            ctx._response = new Response(new ReadableStream<string | ArrayBufferView | ArrayBuffer>({
-                async start(controller) {
-                    ctx.signal.addEventListener('abort', () => {
-                        end = true;
-                        controller.close();
-                    });
-                    if (value !== undefined && value !== null)
-                        controller.enqueue(value as any);
-                    {
-                        const { value } = await (res as Generator | AsyncGenerator).next(controller);
-                        if (!end) {
-                            if (value !== undefined && value !== null) {
-                                controller.enqueue(value as any);
-                                await scheduler.yield();
-                            }
-                            for await (const chunk of res) {
-                                if (end) break;
-                                if (chunk === undefined || chunk === null) continue;
-                                controller.enqueue(chunk);
-                                await scheduler.yield();
-                            }
-                        }
-                    }
-                    controller.close();
-                },
-            }), ctx._set);
+            ctx._rawResponse = res;
         }
-        return ctx._fulfilled = true;
+        ctx._set = {
+            ...ctx._set,
+            ...init,
+            headers: { ...ctx._set.headers, ...init.headers },
+        };
+        fulfilled = true;
     }
-    const res = await instance[propertyKey](...params);
-    if (typeof res !== 'undefined') {
-        for (const name in headers) {
-            ctx._set.headers[name] = headers[name]!;
-        }
-        if (typeof status === 'number')
-            ctx._set.status = status;
-        if (typeof statusText === 'string')
-            ctx._set.statusText = statusText;
-        ctx._response = newResponse(res, ctx._set);
-        return ctx._fulfilled = true;
-    }
+    if (!fulfilled)
+        return;
+    ctx._response = newResponse(ctx._rawResponse, ctx._set);
+    ctx._rawResponse = undefined;
+    ctx._fulfilled = true;
 }
 
 function compileHandler(handler: Handler) {
-    const beforeHandles = handler.controller.hooks.get('beforeHandle')?.map(getMeta);
+    const beforeHandle = handler.controller.hooks.get('beforeHandle')?.map(getMeta);
     const afterHandle = handler.controller.hooks.get('afterHandle')?.map(getMeta);
-    const handlerMeta = getMeta(handler);
+    const mapResponse = handler.controller.hooks.get('mapResponse')?.map(getMeta);
+    const handlerMeta = mapResponse ? [getMeta(handler), ...mapResponse] : [getMeta(handler)];
     return async (ctx: Context, server: Server) => {
         ctx._server = server;
         ctx._fulfilled = false;
@@ -166,11 +138,13 @@ function compileHandler(handler: Handler) {
             statusText: undefined
         };
         try {
-            if (beforeHandles) for (const meta of beforeHandles) {
-                if (await onHandle(ctx, meta))
+            if (beforeHandle) for (const meta of beforeHandle) {
+                await onHandle(ctx, [meta]);
+                if (ctx._fulfilled)
                     return ctx._response!;
             }
-            if (await onHandle(ctx, handlerMeta))
+            await onHandle(ctx, handlerMeta);
+            if (ctx._fulfilled)
                 return ctx._response!;
             ctx._set.status = 404;
             ctx._response = newResponse(null, ctx._set);
@@ -180,7 +154,8 @@ function compileHandler(handler: Handler) {
             if (ctx._fulfilled && afterHandle) {
                 ctx._set = { headers: {} }, ctx._fulfilled = false;
                 for (const meta of afterHandle) {
-                    if (await onHandle(ctx, meta))
+                    await onHandle(ctx, [meta]);
+                    if (ctx._fulfilled)
                         ctx._set = { headers: {} };
                 }
                 if (ctx._fulfilled)

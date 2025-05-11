@@ -238,6 +238,9 @@ function Store(key?: string) {
 }
 register('store', Store);
 
+type RawResponse<T = unknown> = T;
+const RawResponse = register('rawResponse');
+
 register('response', Response);
 
 register('request', Request);
@@ -259,5 +262,6 @@ export {
     Server,
     ResponseInit,
     Store,
+    RawResponse,
     Cookie,
 };
