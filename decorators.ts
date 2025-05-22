@@ -105,7 +105,7 @@ function Mount(path: string, init?: any) {
             getController(constructor).mount(path, { propertyKey, init, value });
         },
         property({ constructor }, propertyKey) {
-            getController(constructor).static(path, { propertyKey, init });
+            getController(constructor).mount(path, { propertyKey, init });
         },
     });
 }
@@ -115,8 +115,10 @@ function Hook(hook: RequestLifecycleHook, init?: {
     status?: number;
     statusText?: string;
 }) {
-    return Decorators(['method'], ({ constructor }, propertyKey, { value }) => {
-        getController(constructor).hook({ propertyKey, hook, init, value });
+    return Decorators({
+        method({ constructor }, propertyKey, { value }) {
+            getController(constructor).hook({ propertyKey, hook, init, value });
+        },
     });
 }
 
@@ -125,8 +127,13 @@ function Route(method: HTTPMethod, path: string, init?: {
     status?: number;
     statusText?: string;
 }) {
-    return Decorators(['method'], ({ constructor }, propertyKey, { value }) => {
-        getController(constructor).route(path, { propertyKey, method, init, value });
+    return Decorators({
+        method({ constructor }, propertyKey, { value }) {
+            getController(constructor).route(path, { propertyKey, method, init, value });
+        },
+        property({ constructor }, propertyKey) {
+            getController(constructor).route(path, { propertyKey, method, init });
+        },
     });
 }
 

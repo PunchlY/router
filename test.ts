@@ -32,13 +32,39 @@ class Logger {
     }
 }
 
+@Controller()
+class JSX {
+    @Hook('mapResponse', { headers: { 'content-type': 'text/html;charset=UTF-8' } })
+    map(response: RawResponse) {
+        return `<body>${response}</body>`;
+    }
+
+    @Route('GET', '/')
+    jsx() {
+        return {
+            $$typeof: Symbol.for('react.transitional.element'),
+            toString() {
+                return '<h1>JSX</h1>';
+            }
+        };
+    }
+}
+
 @Use(Logger)
 @Mount('api', API)
+@Mount('jsx', JSX)
 @Controller()
 class Main {
 
     @Mount('/')
     index = 'Hi';
+
+    @Route('OPTIONS', '/id/:id', {
+        headers: {
+            'Access-Control-Allow-Methods': 'GET',
+        },
+    })
+    __id = null;
 
     @Route('GET', '/id/:id', {
         headers: { 'x-powered-by': 'benchmark' },
@@ -58,23 +84,6 @@ class Main {
         yield 'B';
         yield 'C';
     }
-
-    @Hook('mapResponse', { headers: { 'content-type': 'text/html;charset=UTF-8' } })
-    map(response: RawResponse) {
-        if (typeof response === 'object' && response !== null && Object.hasOwn(response, '$$typeof') && Reflect.get(response, '$$typeof') === Symbol.for('react.transitional.element')) {
-            return String(response);
-        }
-    }
-    @Route('GET', '/jsx')
-    jsx() {
-        return {
-            $$typeof: Symbol.for('react.transitional.element'),
-            toString() {
-                return '<h1>JSX</h1>';
-            }
-        };
-    }
-
 }
 
 Bun.serve({

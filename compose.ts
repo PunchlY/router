@@ -174,7 +174,15 @@ function routes(target: Function): Record<`/${string}`, (HTMLBundle & Response) 
         if (handlers instanceof Map) {
             for (const [method, handler] of handlers)
                 (meta[path] ??= {})[method] ??= handler.stack ?? null;
-            return [path, Object.fromEntries(handlers.entries().map(([method, handler]) => [method, compileHandler(handler)]))];
+            return [path, Object.fromEntries(handlers.entries().map(([method, handler]) => {
+                if ('paramtypes' in handler)
+                    return [method, compileHandler(handler)];
+                const { propertyKey, controller: { target }, init } = handler;
+                const value = construct(target)[propertyKey];
+                if (Object.prototype.toString.call(value) === '[object HTMLBundle]')
+                    return [method, value];
+                return [method, newResponse(construct(target)[propertyKey], init)];
+            }))];
         } else {
             (meta[path] ??= {})[''] ??= handlers.stack ?? null;
             if ('paramtypes' in handlers)

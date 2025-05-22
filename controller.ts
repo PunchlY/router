@@ -61,7 +61,7 @@ class Controller {
     #use: Set<Controller> = new Set();
 
     readonly hooks: Map<RequestLifecycleHook, Handler[]> = new Map();
-    readonly #routes: Map<string, Map<HTTPMethod, Handler> | Handler | Static> = new Map();
+    readonly #routes: Map<string, Map<HTTPMethod, Handler | Static> | Handler | Static> = new Map();
 
     *handlers() {
         if (!this.#prefix)
@@ -72,7 +72,7 @@ class Controller {
     }
 
     #route(path: string) {
-        let route: Map<HTTPMethod, Handler> | Handler | Static;
+        let route: Map<HTTPMethod, Handler | Static> | Handler | Static;
         if (this.#routes.has(path)) {
             route = this.#routes.get(path)!;
             if (!(route instanceof Map))
@@ -104,11 +104,10 @@ class Controller {
         if (!(router instanceof Controller))
             throw new TypeError();
         path = path.replace(/^\/?/, '/');
-        const mount = router;
-        if (!mount.#prefix)
+        if (!router.#prefix)
             throw new Error('Cannot mount a disabled controller');
         const prefix = path.replace(/^(?!\/)|(?<!\/)$/g, '/').replaceAll('$', '$$$$');
-        for (let [path, handler] of mount.handlers()) {
+        for (let [path, handler] of router.handlers()) {
             path = path.replace(/^\/?/, prefix) as `/${string}`;
             if (handler instanceof Map) {
                 const route = this.#route(path);
@@ -125,8 +124,9 @@ class Controller {
         }
     }
 
-    static(path: string, options: {
+    mount(path: string, { propertyKey, init, value }: {
         propertyKey: string | symbol;
+        value?: unknown,
         init?: {
             headers?: HeadersInit;
             status?: number;
@@ -136,37 +136,13 @@ class Controller {
         path = path.replace(/^\/?/, '/');
         if (this.#routes.has(path))
             throw new Error('Route already exists for this path');
-        const { propertyKey, init } = options;
         this.#routes.set(path, {
             controller: this,
             propertyKey,
-            init: {
-                ...init,
-                headers: Object.fromEntries(new Headers(init?.headers)),
+            ...typeof value === 'function' && {
+                type: getMethodType(value),
+                paramtypes: this.#getParamTypes(propertyKey),
             },
-        });
-
-        if (process.env.NODE_ENV !== 'production')
-            (this.#routes.get(path) as Static)!.stack = getStack();
-    }
-    mount(path: string, router: {
-        propertyKey: string | symbol;
-        value: unknown,
-        init?: {
-            headers?: HeadersInit;
-            status?: number;
-            statusText?: string;
-        };
-    }) {
-        path = path.replace(/^\/?/, '/');
-        if (this.#routes.has(path))
-            throw new Error('Route already exists for this path');
-        const { propertyKey, init, value } = router;
-        this.#routes.set(path, {
-            controller: this,
-            propertyKey,
-            type: getMethodType(value),
-            paramtypes: this.#getParamTypes(propertyKey),
             init: {
                 ...init,
                 headers: Object.fromEntries(new Headers(init?.headers)),
@@ -176,10 +152,10 @@ class Controller {
         if (process.env.NODE_ENV !== 'production')
             (this.#routes.get(path) as Handler)!.stack = getStack();
     }
-    route(path: string, options: {
+    route(path: string, { method, propertyKey, init, value }: {
         propertyKey: string | symbol;
         method: HTTPMethod;
-        value: unknown,
+        value?: unknown,
         init?: {
             headers?: HeadersInit;
             status?: number;
@@ -187,19 +163,20 @@ class Controller {
         };
     }) {
         path = path.replace(/^\/?/, '/');
-        const { method, propertyKey, init, value } = options;
         const route = this.#route(path);
         if (route.has(method))
             throw new Error('Route already exists for this method');
         route.set(method, {
             controller: this,
-            type: getMethodType(value),
+            ...typeof value === 'function' && {
+                type: getMethodType(value),
+                paramtypes: this.#getParamTypes(propertyKey),
+            },
             propertyKey,
             init: {
                 ...init,
                 headers: Object.fromEntries(new Headers(init?.headers)),
             },
-            paramtypes: this.#getParamTypes(propertyKey),
         });
 
         if (process.env.NODE_ENV !== 'production')
