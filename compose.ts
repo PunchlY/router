@@ -1,5 +1,4 @@
 import type { BunRequest, Server, RouterTypes, HTMLBundle } from 'bun';
-import { scheduler } from 'node:timers/promises';
 import { type Handler, getController } from './controller';
 import { construct } from './service';
 import { parseBody, newResponse, parseQuery, Stream, type StreamLike } from './util';
@@ -98,14 +97,16 @@ async function mapParams(ctx: Context, paramtypes: HandlerMeta['paramtypes']) {
     return params;
 }
 
-async function onHandle(ctx: Context, handlerMeta: HandlerMeta[]) {
+async function onHandle(ctx: Context, handlerMeta: HandlerMeta, mapResponse?: HandlerMeta[]) {
     let fulfilled = false;
-    for (const { instance, propertyKey, paramtypes, isGenerator, init } of handlerMeta) {
+    for (const { instance, propertyKey, paramtypes, isGenerator, init } of mapResponse ? [handlerMeta, ...mapResponse] : [handlerMeta]) {
         const res = await instance[propertyKey](...await mapParams(ctx, paramtypes));
         if (isGenerator) {
             const { value, done } = await (res as StreamLike).next();
             ctx._rawResponse = done ? value : new Stream(value, res as StreamLike);
         } else if (typeof res === 'undefined') {
+            if (!fulfilled)
+                break;
             continue;
         } else {
             ctx._rawResponse = res;
@@ -128,7 +129,7 @@ function compileHandler(handler: Handler) {
     const beforeHandle = handler.controller.hooks.get('beforeHandle')?.map(getMeta);
     const afterHandle = handler.controller.hooks.get('afterHandle')?.map(getMeta);
     const mapResponse = handler.controller.hooks.get('mapResponse')?.map(getMeta);
-    const handlerMeta = mapResponse ? [getMeta(handler), ...mapResponse] : [getMeta(handler)];
+    const handlerMeta = getMeta(handler);
     return async (ctx: Context, server: Server) => {
         ctx._server = server;
         ctx._fulfilled = false;
@@ -139,11 +140,11 @@ function compileHandler(handler: Handler) {
         };
         try {
             if (beforeHandle) for (const meta of beforeHandle) {
-                await onHandle(ctx, [meta]);
+                await onHandle(ctx, meta);
                 if (ctx._fulfilled)
                     return ctx._response!;
             }
-            await onHandle(ctx, handlerMeta);
+            await onHandle(ctx, handlerMeta, mapResponse);
             if (ctx._fulfilled)
                 return ctx._response!;
             ctx._set.status = 404;
@@ -154,7 +155,7 @@ function compileHandler(handler: Handler) {
             if (ctx._fulfilled && afterHandle) {
                 ctx._set = { headers: {} }, ctx._fulfilled = false;
                 for (const meta of afterHandle) {
-                    await onHandle(ctx, [meta]);
+                    await onHandle(ctx, meta);
                     if (ctx._fulfilled)
                         ctx._set = { headers: {} };
                 }
