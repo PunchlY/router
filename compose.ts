@@ -1,100 +1,17 @@
-import type { BunRequest, Server, RouterTypes, HTMLBundle } from 'bun';
+import type { Server, RouterTypes, HTMLBundle } from 'bun';
 import { type Handler, getController } from './controller';
-import { construct } from './service';
-import { parseBody, newResponse, parseQuery, Stream, type StreamLike } from './util';
-import { Parse } from '@sinclair/typebox/value';
-import { TypeGuard } from '@sinclair/typebox';
-
-interface Context extends BunRequest {
-    _server: Server;
-    _fulfilled: boolean;
-    _set: {
-        readonly headers: Record<string, string>;
-        status?: number;
-        statusText?: string;
-    };
-    _rawResponse?: unknown;
-    _response?: Response;
-    _url?: URL;
-    _query?: Record<string, unknown>;
-    _body?: unknown;
-    _store?: Record<string, any>;
-}
+import { construct, mapParams, type Context } from './service';
+import { newResponse, Stream, type StreamLike } from './util';
 
 type HandlerMeta = ReturnType<typeof getMeta>;
 function getMeta({ controller: { target }, propertyKey, paramtypes, init, type }: Handler) {
     return {
         instance: construct(target),
         propertyKey,
-        paramtypes: paramtypes.map((type) => {
-            if (typeof type === 'function')
-                return { value: construct(type) };
-            return type;
-        }),
+        paramtypes,
         init,
         isGenerator: type === 'GeneratorFunction' || type === 'AsyncGeneratorFunction',
     };
-}
-
-async function mapParams(ctx: Context, paramtypes: HandlerMeta['paramtypes']) {
-    const params: any[] = [];
-    for (const type of paramtypes) {
-        if ('value' in type) {
-            params.push(type.value);
-        } else {
-            let value: any;
-            switch (type.identifier) {
-                case 'url': {
-                    value = ctx._url ??= new URL(ctx.url);
-                } break;
-                case 'request': {
-                    value = ctx;
-                } break;
-                case 'server': {
-                    value = ctx._server;
-                } break;
-                case 'rawResponse': {
-                    value = ctx._rawResponse;
-                } break;
-                case 'response': {
-                    value = ctx._response;
-                } break;
-                case 'responseInit': {
-                    value = ctx._set;
-                } break;
-                case 'store': {
-                    value = ctx._store ??= {};
-                } break;
-                case 'params': {
-                    value = ctx.params;
-                } break;
-                case 'query': {
-                    value = ctx._query ??= parseQuery((ctx._url ??= new URL(ctx.url)).searchParams);
-                } break;
-                case 'cookie': {
-                    value = ctx.cookies;
-                } break;
-                case 'body': {
-                    if (typeof ctx._body === 'undefined') {
-                        value = ctx._body = await parseBody(ctx);
-                    } else {
-                        value = ctx._body;
-                    }
-                } break;
-                default:
-                    throw new TypeError();
-            }
-            if (typeof type.key === 'string')
-                value = Object.hasOwn(value, type.key) ? value[type.key] : undefined;
-            if (TypeGuard.IsSchema(type.schema)) {
-                value = type.operations ?
-                    Parse(type.operations, type.schema, value) :
-                    Parse(type.schema, value);
-            }
-            params.push(value);
-        }
-    }
-    return params;
 }
 
 async function onHandle(ctx: Context, handlerMeta: HandlerMeta, mapResponse?: HandlerMeta[]) {

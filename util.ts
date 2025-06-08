@@ -1,4 +1,66 @@
 
+function decoratorTypeOf(args: IArguments): keyof DecoratorsOptions {
+    const [target, propertyKey, descriptor] = args as { [Symbol.iterator](): ArrayIterator<unknown>; };
+    if ((typeof target !== 'object' || target === null) && typeof target !== 'function')
+        throw new TypeError();
+    if (typeof propertyKey !== 'string' && typeof propertyKey !== 'symbol' && typeof propertyKey !== 'undefined')
+        throw new TypeError();
+    if ((typeof descriptor !== 'object' || descriptor === null) && typeof descriptor !== 'number' && typeof descriptor !== 'undefined')
+        throw new TypeError();
+
+    const staticType = <T extends string>(type: T) => typeof target === 'function' && Object.hasOwn(target, 'prototype') ? `${type}_static` as const : type;
+    if (typeof descriptor === 'number')
+        return typeof propertyKey === 'undefined' ? 'parameter_constructor' : staticType('parameter');
+    if (typeof descriptor === 'object') {
+        if ('get' in descriptor || 'set' in descriptor)
+            return staticType('accessor');
+        if ('value' in descriptor)
+            return staticType('method');
+        throw new TypeError();
+    }
+    if (typeof propertyKey !== 'undefined')
+        return staticType('property');
+    return 'class';
+}
+
+interface DecoratorsOptions {
+    class?(target: Function): void;
+
+    property?(target: Object, propertyKey: string | symbol): void;
+    property_static?(target: Function, propertyKey: string | symbol): void;
+
+    accessor?(target: Object, propertyKey: string | symbol, descriptor: { get?(): unknown, set?(value: unknown): void; }): void;
+    accessor_static?(target: Function, propertyKey: string | symbol, descriptor: { get?(): unknown, set?(value: unknown): void; }): void;
+
+    method?(target: Object, propertyKey: string | symbol, descriptor: { value?: unknown; }): void;
+    method_static?(target: Function, propertyKey: string | symbol, descriptor: { value?: unknown; }): void;
+
+    parameter?(target: Object, propertyKey: string | symbol, parameterIndex: number): void;
+    parameter_static?(target: Function, propertyKey: string | symbol, parameterIndex: number): void;
+    parameter_constructor?(target: Function, propertyKey: undefined, parameterIndex: number): void;
+}
+
+type IntersectionFromUnion<T> = (T extends any ? (arg: T) => void : never) extends (arg: infer P) => void ? P : never;
+
+type Decorators<K extends keyof DecoratorsOptions> = IntersectionFromUnion<NonNullable<DecoratorsOptions[K]>>;
+
+function Decorators<T extends DecoratorsOptions>(options: T): Decorators<keyof T & keyof DecoratorsOptions>;
+function Decorators<K extends keyof DecoratorsOptions>(type: K[], fn: Decorators<K>): typeof fn;
+function Decorators(options: DecoratorsOptions | (keyof DecoratorsOptions)[], fn?: Decorators<keyof DecoratorsOptions>) {
+    if (Array.isArray(options)) return function (target: Function & Object, propertyKey: never, descriptor: number & TypedPropertyDescriptor<unknown>) {
+        const type = decoratorTypeOf(arguments);
+        if (!options.includes(type))
+            throw new Error('Decorator type not found');
+        fn!(target, propertyKey, descriptor);
+    };
+    return function (target: Function & Object, propertyKey: never, descriptor: number & Required<TypedPropertyDescriptor<unknown>>) {
+        const type = decoratorTypeOf(arguments);
+        if (!Object.hasOwn(options, type))
+            throw new Error('Decorator type not found');
+        options[decoratorTypeOf(arguments)]!(target, propertyKey, descriptor);
+    };
+}
+
 const AsyncFunction = async function () { }.constructor as FunctionConstructor;
 const AsyncGeneratorFunction = async function* () { }.constructor as AsyncGeneratorFunctionConstructor;
 const GeneratorFunction = function* () { }.constructor as GeneratorFunctionConstructor;
@@ -12,15 +74,6 @@ class Stream {
     constructor(firstValue: string | ArrayBuffer | ArrayBufferView, values: StreamLike) {
         this.#firstValue = firstValue;
         this.#values = values;
-    }
-    *[Symbol.iterator]() {
-        if (this.#used)
-            return;
-        if (!(this.#values instanceof GeneratorFunction.prototype))
-            throw new TypeError('The provided value is not an instance of a generator function.');
-        this.#used = true;
-        yield this.#firstValue;
-        yield* this.#values;
     }
     async *[Symbol.asyncIterator]() {
         if (this.#used)
@@ -79,7 +132,8 @@ async function parseBody(request: Request) {
         case 'application/x-www-form-urlencoded':
             return parseQuery(new URLSearchParams(await request.text()));
         case 'multipart/form-data': {
-            const body: Record<string, ReturnType<Awaited<ReturnType<Response['formData']>>['getAll']> | ReturnType<Awaited<ReturnType<Response['formData']>>['getAll']>[number]> = {}, form = await request.formData();
+            const body: Record<string, ReturnType<Awaited<ReturnType<Response['formData']>>['getAll']> | ReturnType<Awaited<ReturnType<Response['formData']>>['getAll']>[number]> = {};
+            const form = await request.formData();
             for (const key of form.keys()) {
                 const value = form.getAll(key);
                 body[key] = value.length === 1 ? value[0]! : value;
@@ -117,6 +171,7 @@ function getStack() {
     return match[0];
 }
 
+export { Decorators };
 export { type StreamLike, Stream, newResponse };
 export { parseBody, parseQuery };
 export { getMethodType, type MethodType };

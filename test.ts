@@ -1,6 +1,16 @@
 import { Mount, Route, RequestUrl, Params, Query, Store, Hook, Server, Injectable, Use, Controller, RawResponse } from './decorators';
 import { routes } from './compose';
 
+@Injectable({ scope: 'REQUEST' })
+class User {
+    constructor(
+        @Params('id', { operations: [] }) public id: string,
+        @Query('name', { operations: [] }) public name: string,
+    ) {
+        console.log('user %s %s', id, name);
+    }
+}
+
 @Injectable()
 class DB {
     constructor() {
@@ -16,6 +26,12 @@ class API {
     @Route('GET', '/ip')
     test(request: Request, server: Server) {
         return server.requestIP(request);
+    }
+    @Route('GET', '/id/:id', {
+        headers: { 'x-powered-by': 'benchmark' },
+    })
+    id(user: User) {
+        return `${user.id} ${user.name}`;
     }
 }
 
