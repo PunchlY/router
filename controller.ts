@@ -1,6 +1,6 @@
 import 'reflect-metadata/lite';
 import { instanceBucket } from './bucket';
-import { getParamTypes, type ParamTypes } from './service';
+import { getParamTypes, type ParamType } from './service';
 import { getMethodType, getStack, type MethodType } from './util';
 import type { HeadersInit } from 'bun';
 
@@ -15,7 +15,7 @@ interface Handler {
     controller: Controller;
     propertyKey: string | symbol;
     type: MethodType,
-    paramtypes: ParamTypes;
+    paramtypes: ParamType[];
     init: {
         headers?: Record<string, string>;
         status?: number;
