@@ -1,5 +1,5 @@
 import type { Server, RouterTypes, HTMLBundle, BunRequest } from 'bun';
-import { type Handler, getController } from './controller';
+import { type Handler, type Static, getController } from './controller';
 import { construct, getParamTypes, type ParamType } from './service';
 import { newResponse, parseBody, parseQuery, Stream, type StreamLike } from './util';
 import { TypeGuard } from '@sinclair/typebox';
@@ -94,11 +94,11 @@ async function mapParams(ctx: Context, paramtypes: ParamType[]) {
 }
 
 type HandlerMeta = ReturnType<typeof getMeta>;
-function getMeta({ controller: { target }, propertyKey, paramtypes, init, type }: Handler) {
+function getMeta({ controller: { target }, propertyKey, init, type }: Handler) {
     return {
         instance: construct(target),
         propertyKey,
-        paramtypes,
+        paramtypes: getParamTypes(target, propertyKey),
         init,
         isGenerator: type === 'GeneratorFunction' || type === 'AsyncGeneratorFunction',
     };
@@ -175,27 +175,26 @@ function compileHandler(handler: Handler) {
     };
 }
 
+function getStaticResource({ propertyKey, controller: { target }, init }: Static) {
+    const value = construct(target)[propertyKey];
+    if (Object.prototype.toString.call(value) === '[object HTMLBundle]')
+        return value as HTMLBundle;
+    return newResponse(construct(target)[propertyKey], init);
+}
+
 function routes(target: Function): Record<`/${string}`, (HTMLBundle & Response) | Response | RouterTypes.RouteHandler<string> | RouterTypes.RouteHandlerObject<string>> {
     const controller = getController(target);
     const routes = Object.fromEntries(controller.handlers().map(([path, handlers]) => {
         if (handlers instanceof Map) {
             return [path, Object.fromEntries(handlers.entries().map(([method, handler]) => {
-                if ('paramtypes' in handler)
+                if ('type' in handler)
                     return [method, compileHandler(handler)];
-                const { propertyKey, controller: { target }, init } = handler;
-                const value = construct(target)[propertyKey];
-                if (Object.prototype.toString.call(value) === '[object HTMLBundle]')
-                    return [method, value];
-                return [method, newResponse(construct(target)[propertyKey], init)];
+                return [method, getStaticResource(handler)];
             }))];
         } else {
-            if ('paramtypes' in handlers)
+            if ('type' in handlers)
                 return [path, compileHandler(handlers)];
-            const { propertyKey, controller: { target }, init } = handlers;
-            const value = construct(target)[propertyKey];
-            if (Object.prototype.toString.call(value) === '[object HTMLBundle]')
-                return [path, value];
-            return [path, newResponse(construct(target)[propertyKey], init)];
+            return [path, getStaticResource(handlers)];
         }
     }));
     return routes as any;

@@ -1,6 +1,5 @@
 import 'reflect-metadata/lite';
 import { instanceBucket } from './bucket';
-import { getParamTypes, type ParamType } from './service';
 import { getMethodType, type MethodType } from './util';
 import type { HeadersInit } from 'bun';
 
@@ -13,7 +12,6 @@ interface Handler {
     controller: Controller;
     propertyKey: string | symbol;
     type: MethodType,
-    paramtypes: ParamType[];
     init: {
         headers?: Record<string, string>;
         status?: number;
@@ -43,10 +41,6 @@ class Controller {
     constructor(public readonly target: Function) {
         if (typeof target !== 'function')
             throw new TypeError();
-    }
-
-    #getParamTypes(propertyKey: string | symbol) {
-        return getParamTypes(this.target.prototype, propertyKey);
     }
 
     #use: Set<Controller> = new Set();
@@ -132,7 +126,6 @@ class Controller {
             propertyKey,
             ...typeof value === 'function' && {
                 type: getMethodType(value),
-                paramtypes: this.#getParamTypes(propertyKey),
             },
             init: {
                 ...init,
@@ -158,7 +151,6 @@ class Controller {
             controller: this,
             ...typeof value === 'function' && {
                 type: getMethodType(value),
-                paramtypes: this.#getParamTypes(propertyKey),
             },
             propertyKey,
             init: {
@@ -186,7 +178,6 @@ class Controller {
             controller: this,
             propertyKey,
             type: getMethodType(value),
-            paramtypes: this.#getParamTypes(propertyKey),
             init: {
                 ...init,
                 headers: Object.fromEntries(new Headers(init?.headers)),

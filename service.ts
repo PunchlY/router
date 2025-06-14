@@ -113,6 +113,10 @@ function setParamType(target: object, propertyKey: string | symbol | undefined, 
 const injectableFunctionMap = new WeakMap<Function, 'SINGLETON' | 'REQUEST' | 'INSTANCE'>();
 
 function registerInjectable(constructor: Function, scope: 'SINGLETON' | 'REQUEST' | 'INSTANCE') {
+    if (typeof constructor !== 'function')
+        throw new TypeError();
+    if (injectableFunctionMap.has(constructor))
+        throw new Error(`Constructor ${constructor.name} is already registered as injectable`);
     injectableFunctionMap.set(constructor, scope);
 }
 
@@ -121,6 +125,8 @@ const instanceBucket = new WeakMap<Function, any>();
 function construct(constructor: Function): any {
     if (instanceBucket.has(constructor))
         return instanceBucket.get(constructor);
+    if (injectableFunctionMap.get(constructor) !== 'SINGLETON')
+        throw new TypeError();
     const instance = Reflect.construct(constructor, getParamTypes(constructor).map((constructor) => {
         if (typeof constructor.identifier !== 'function')
             throw new TypeError();

@@ -9,6 +9,7 @@ function Controller(prefix?: string) {
     return Decorators({
         class(target) {
             getController(target).setPrefix(prefix);
+            registerInjectable(target, 'SINGLETON');
         },
     });
 }
