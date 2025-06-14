@@ -100,7 +100,7 @@ function getMeta({ controller: { target }, propertyKey, init, type }: Handler) {
         propertyKey,
         paramtypes: getParamTypes(target, propertyKey),
         init,
-        isGenerator: type === 'GeneratorFunction' || type === 'AsyncGeneratorFunction',
+        isGenerator: type === 'Generator',
     };
 }
 
@@ -187,14 +187,14 @@ function routes(target: Function): Record<`/${string}`, (HTMLBundle & Response) 
     const routes = Object.fromEntries(controller.handlers().map(([path, handlers]) => {
         if (handlers instanceof Map) {
             return [path, Object.fromEntries(handlers.entries().map(([method, handler]) => {
-                if ('type' in handler)
-                    return [method, compileHandler(handler)];
-                return [method, getStaticResource(handler)];
+                if (handler.type === 'Static')
+                    return [method, getStaticResource(handler)];
+                return [method, compileHandler(handler)];
             }))];
         } else {
-            if ('type' in handlers)
-                return [path, compileHandler(handlers)];
-            return [path, getStaticResource(handlers)];
+            if (handlers.type === 'Static')
+                return [path, getStaticResource(handlers)];
+            return [path, compileHandler(handlers)];
         }
     }));
     return routes as any;

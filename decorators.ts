@@ -2,8 +2,18 @@ import { getController, type HTTPMethod, type RequestLifecycleHook } from './con
 import type { TSchema } from '@sinclair/typebox';
 import { setParamType, registerInjectable, register } from './service';
 import type { TParseOperation } from '@sinclair/typebox/value';
-import { CookieMap, type HeadersInit } from 'bun';
+import { type HeadersInit } from 'bun';
 import { Decorators } from './util';
+
+const AsyncGeneratorFunction = async function* () { }.constructor as AsyncGeneratorFunctionConstructor;
+const GeneratorFunction = function* () { }.constructor as GeneratorFunctionConstructor;
+function functionType(value: any) {
+    if (typeof value !== 'function')
+        throw new TypeError();
+    if (value instanceof AsyncGeneratorFunction || value instanceof GeneratorFunction)
+        return 'Generator';
+    return 'Function';
+}
 
 function Controller(prefix?: string) {
     return Decorators({
@@ -42,10 +52,10 @@ function Mount(path: string, init?: any) {
             getController(target).mountController(path, getController(init));
         },
         method({ constructor }, propertyKey, { value }) {
-            getController(constructor).mount(path, { propertyKey, init, value });
+            getController(constructor).mount(path, { propertyKey, init, type: functionType(value), });
         },
         property({ constructor }, propertyKey) {
-            getController(constructor).mount(path, { propertyKey, init });
+            getController(constructor).mount(path, { propertyKey, init, type: 'Static' });
         },
     });
 }
@@ -57,7 +67,7 @@ function Hook(hook: RequestLifecycleHook, init?: {
 }) {
     return Decorators({
         method({ constructor }, propertyKey, { value }) {
-            getController(constructor).hook({ propertyKey, hook, init, value });
+            getController(constructor).hook({ propertyKey, hook, init, type: functionType(value) });
         },
     });
 }
@@ -69,10 +79,10 @@ function Route(method: HTTPMethod, path: string, init?: {
 }) {
     return Decorators({
         method({ constructor }, propertyKey, { value }) {
-            getController(constructor).route(path, { propertyKey, method, init, value });
+            getController(constructor).route(path, { propertyKey, method, init, type: functionType(value), });
         },
         property({ constructor }, propertyKey) {
-            getController(constructor).route(path, { propertyKey, method, init });
+            getController(constructor).route(path, { propertyKey, method, init, type: 'Static' });
         },
     });
 }
@@ -192,8 +202,8 @@ register('response', Response);
 
 register('request', Request);
 
-type Cookie = CookieMap;
-const Cookie = register('cookie', CookieMap);
+type Cookie = Bun.CookieMap;
+const Cookie = register('cookie');
 
 export {
     Controller,

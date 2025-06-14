@@ -61,11 +61,6 @@ function Decorators(options: DecoratorsOptions | (keyof DecoratorsOptions)[], fn
     };
 }
 
-const AsyncFunction = async function () { }.constructor as FunctionConstructor;
-const AsyncGeneratorFunction = async function* () { }.constructor as AsyncGeneratorFunctionConstructor;
-const GeneratorFunction = function* () { }.constructor as GeneratorFunctionConstructor;
-type MethodType = ReturnType<typeof getMethodType>;
-
 type StreamLike = IterableIterator<string | ArrayBuffer | ArrayBufferView<ArrayBufferLike>> | AsyncIterableIterator<string | ArrayBuffer | ArrayBufferView<ArrayBufferLike>>;
 class Stream {
     #firstValue;
@@ -150,19 +145,6 @@ async function parseBody(request: Request) {
     throw new Error('Unsupported content type');
 };
 
-function getMethodType(value: unknown) {
-    if (typeof value !== 'function')
-        throw new TypeError();
-    if (value instanceof AsyncGeneratorFunction)
-        return 'AsyncGeneratorFunction';
-    if (value instanceof GeneratorFunction)
-        return 'GeneratorFunction';
-    if (value instanceof AsyncFunction)
-        return 'AsyncFunction';
-    return 'Function';
-}
-
 export { Decorators };
 export { type StreamLike, Stream, newResponse };
 export { parseBody, parseQuery };
-export { getMethodType, type MethodType };

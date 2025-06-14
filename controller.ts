@@ -1,7 +1,6 @@
 import 'reflect-metadata/lite';
-import { instanceBucket } from './bucket';
-import { getMethodType, type MethodType } from './util';
 import type { HeadersInit } from 'bun';
+import { instanceBucket } from './bucket';
 
 const RequestLifecycleHook = ['beforeHandle', 'mapResponse', 'afterHandle'] as const;
 type RequestLifecycleHook = typeof RequestLifecycleHook[number];
@@ -9,9 +8,9 @@ type RequestLifecycleHook = typeof RequestLifecycleHook[number];
 type HTTPMethod = import('bun').RouterTypes.HTTPMethod;
 
 interface Handler {
+    type: 'Generator' | 'Function',
     controller: Controller;
     propertyKey: string | symbol;
-    type: MethodType,
     init: {
         headers?: Record<string, string>;
         status?: number;
@@ -19,6 +18,7 @@ interface Handler {
     };
 }
 interface Static {
+    type: 'Static';
     controller: Controller;
     propertyKey: string | symbol;
     init: {
@@ -109,9 +109,9 @@ class Controller {
         }
     }
 
-    mount(path: string, { propertyKey, init, value }: {
+    mount(path: string, { propertyKey, init, type }: {
         propertyKey: string | symbol;
-        value?: unknown,
+        type: 'Generator' | 'Function' | 'Static',
         init?: {
             headers?: HeadersInit;
             status?: number;
@@ -124,19 +124,17 @@ class Controller {
         this.#routes.set(path, {
             controller: this,
             propertyKey,
-            ...typeof value === 'function' && {
-                type: getMethodType(value),
-            },
+            type,
             init: {
                 ...init,
                 headers: Object.fromEntries(new Headers(init?.headers)),
             },
         });
     }
-    route(path: string, { method, propertyKey, init, value }: {
+    route(path: string, { method, propertyKey, init, type }: {
         propertyKey: string | symbol;
         method: HTTPMethod;
-        value?: unknown,
+        type: 'Generator' | 'Function' | 'Static',
         init?: {
             headers?: HeadersInit;
             status?: number;
@@ -149,9 +147,7 @@ class Controller {
             throw new Error('Route already exists for this method');
         route.set(method, {
             controller: this,
-            ...typeof value === 'function' && {
-                type: getMethodType(value),
-            },
+            type,
             propertyKey,
             init: {
                 ...init,
@@ -159,10 +155,10 @@ class Controller {
             },
         });
     }
-    hook({ hook: name, propertyKey, init, value }: {
+    hook({ hook: name, propertyKey, init, type }: {
         hook: RequestLifecycleHook;
         propertyKey: string | symbol;
-        value: unknown,
+        type: 'Generator' | 'Function',
         init?: {
             headers?: HeadersInit;
             status?: number;
@@ -177,7 +173,7 @@ class Controller {
         hooks.push({
             controller: this,
             propertyKey,
-            type: getMethodType(value),
+            type,
             init: {
                 ...init,
                 headers: Object.fromEntries(new Headers(init?.headers)),
