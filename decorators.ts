@@ -15,10 +15,10 @@ function functionType(value: any) {
     return 'Function';
 }
 
-function Controller(prefix?: string) {
+function Controller(opt?: { prefix?: string; }) {
     return Decorators({
         class(target) {
-            getController(target).setPrefix(prefix);
+            getController(target).setPrefix(opt?.prefix);
             registerInjectable(target, 'SINGLETON');
         },
     });
