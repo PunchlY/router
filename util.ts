@@ -80,7 +80,7 @@ class Stream {
             return;
         this.#used = true;
         yield this.#firstValue;
-        yield* this.#values;
+        return yield* this.#values;
     }
 }
 

@@ -1,7 +1,97 @@
-import type { Server, RouterTypes, HTMLBundle } from 'bun';
+import type { Server, RouterTypes, HTMLBundle, BunRequest } from 'bun';
 import { type Handler, getController } from './controller';
-import { construct, mapParams, type Context } from './service';
-import { newResponse, Stream, type StreamLike } from './util';
+import { construct, getParamTypes, type ParamType } from './service';
+import { newResponse, parseBody, parseQuery, Stream, type StreamLike } from './util';
+import { TypeGuard } from '@sinclair/typebox';
+import { Parse } from '@sinclair/typebox/value';
+
+interface Context extends BunRequest {
+    _server: Server;
+    _set: {
+        readonly headers: Record<string, string>;
+        status?: number;
+        statusText?: string;
+    };
+    _rawResponse?: unknown;
+    _response?: Response;
+    _url?: URL;
+    _query?: Record<string, unknown>;
+    _body?: unknown;
+    _store?: Record<string, any>;
+    _instances?: WeakMap<Function, any>;
+}
+
+async function mapParams(ctx: Context, paramtypes: ParamType[]) {
+    const params: any[] = [];
+    for (const type of paramtypes) {
+        if (typeof type.identifier === 'function') {
+            if (type.scope === 'SINGLETON') {
+                params.push(construct(type.identifier));
+                continue;
+            }
+            if (type.scope === 'REQUEST' && ctx._instances?.has(type.identifier)) {
+                params.push(ctx._instances.get(type.identifier));
+                continue;
+            }
+            const instance = Reflect.construct(type.identifier, await mapParams(ctx, getParamTypes(type.identifier)));
+            if (type.scope === 'REQUEST')
+                (ctx._instances ??= new WeakMap()).set(type.identifier, instance);
+            params.push(instance);
+            continue;
+        }
+        let value: any;
+        switch (type.identifier) {
+            case 'url': {
+                value = ctx._url ??= new URL(ctx.url);
+            } break;
+            case 'request': {
+                value = ctx;
+            } break;
+            case 'server': {
+                value = ctx._server;
+            } break;
+            case 'rawResponse': {
+                value = ctx._rawResponse;
+            } break;
+            case 'response': {
+                value = ctx._response;
+            } break;
+            case 'responseInit': {
+                value = ctx._set;
+            } break;
+            case 'store': {
+                value = ctx._store ??= {};
+            } break;
+            case 'params': {
+                value = ctx.params;
+            } break;
+            case 'query': {
+                value = ctx._query ??= parseQuery((ctx._url ??= new URL(ctx.url)).searchParams);
+            } break;
+            case 'cookie': {
+                value = ctx.cookies;
+            } break;
+            case 'body': {
+                if (typeof ctx._body === 'undefined') {
+                    value = ctx._body = await parseBody(ctx);
+                } else {
+                    value = ctx._body;
+                }
+            } break;
+            default:
+                throw new TypeError();
+        }
+        if (typeof type.key === 'string')
+            value = Object.hasOwn(value, type.key) ? value[type.key] : undefined;
+        if (TypeGuard.IsSchema(type.schema)) {
+            value = type.operations ?
+                Parse(type.operations, type.schema, value) :
+                Parse(type.schema, value);
+        }
+        params.push(value);
+    }
+    return params;
+}
 
 type HandlerMeta = ReturnType<typeof getMeta>;
 function getMeta({ controller: { target }, propertyKey, paramtypes, init, type }: Handler) {
@@ -14,32 +104,22 @@ function getMeta({ controller: { target }, propertyKey, paramtypes, init, type }
     };
 }
 
-async function onHandle(ctx: Context, handlerMeta: HandlerMeta, mapResponse?: HandlerMeta[]) {
-    let fulfilled = false;
-    for (const { instance, propertyKey, paramtypes, isGenerator, init } of mapResponse ? [handlerMeta, ...mapResponse] : [handlerMeta]) {
-        const res = await instance[propertyKey](...await mapParams(ctx, paramtypes));
-        if (isGenerator) {
-            const { value, done } = await (res as StreamLike).next();
-            ctx._rawResponse = done ? value : new Stream(value, res as StreamLike);
-        } else if (typeof res === 'undefined') {
-            if (!fulfilled)
-                break;
-            continue;
-        } else {
-            ctx._rawResponse = res;
-        }
-        ctx._set = {
-            ...ctx._set,
-            ...init,
-            headers: { ...ctx._set.headers, ...init.headers },
-        };
-        fulfilled = true;
+async function onHandle(ctx: Context, { instance, propertyKey, paramtypes, isGenerator, init }: HandlerMeta) {
+    const res = await instance[propertyKey](...await mapParams(ctx, paramtypes));
+    if (isGenerator) {
+        const { value, done } = await (res as StreamLike).next();
+        ctx._rawResponse = done ? value : new Stream(value, res as StreamLike);
+    } else if (typeof res === 'undefined') {
+        return false;
+    } else {
+        ctx._rawResponse = res;
     }
-    if (!fulfilled)
-        return;
-    ctx._response = newResponse(ctx._rawResponse, ctx._set);
-    ctx._rawResponse = undefined;
-    ctx._fulfilled = true;
+    ctx._set = {
+        ...ctx._set,
+        ...init,
+        headers: { ...ctx._set.headers, ...init.headers },
+    };
+    return true;
 }
 
 function compileHandler(handler: Handler) {
@@ -48,8 +128,8 @@ function compileHandler(handler: Handler) {
     const mapResponse = handler.controller.hooks.get('mapResponse')?.map(getMeta);
     const handlerMeta = getMeta(handler);
     return async (ctx: Context, server: Server) => {
+        let fulfilled = false;
         ctx._server = server;
-        ctx._fulfilled = false;
         ctx._set = {
             headers: {},
             status: undefined,
@@ -57,26 +137,38 @@ function compileHandler(handler: Handler) {
         };
         try {
             if (beforeHandle) for (const meta of beforeHandle) {
-                await onHandle(ctx, meta);
-                if (ctx._fulfilled)
-                    return ctx._response!;
+                if (await onHandle(ctx, meta)) {
+                    ctx._response = newResponse(ctx._rawResponse, ctx._set);
+                    ctx._rawResponse = undefined;
+                    fulfilled = true;
+                    return ctx._response;
+                }
             }
-            await onHandle(ctx, handlerMeta, mapResponse);
-            if (ctx._fulfilled)
-                return ctx._response!;
+            if (await onHandle(ctx, handlerMeta)) {
+                if (mapResponse) for (const handlerMeta of mapResponse)
+                    await onHandle(ctx, handlerMeta);
+                ctx._response = newResponse(ctx._rawResponse, ctx._set);
+                ctx._rawResponse = undefined;
+                fulfilled = true;
+                return ctx._response;
+            }
             ctx._set.status = 404;
             ctx._response = newResponse(null, ctx._set);
-            ctx._fulfilled = true;
+            ctx._rawResponse = undefined;
+            fulfilled = true;
             return ctx._response;
         } finally {
-            if (ctx._fulfilled && afterHandle) {
-                ctx._set = { headers: {} }, ctx._fulfilled = false;
+            if (fulfilled && afterHandle) {
+                ctx._set = { headers: {} }, fulfilled = false;
                 for (const meta of afterHandle) {
                     await onHandle(ctx, meta);
-                    if (ctx._fulfilled)
+                    ctx._response = newResponse(ctx._rawResponse, ctx._set);
+                    ctx._rawResponse = undefined;
+                    fulfilled = true;
+                    if (fulfilled)
                         ctx._set = { headers: {} };
                 }
-                if (ctx._fulfilled)
+                if (fulfilled)
                     return ctx._response!;
             }
         }

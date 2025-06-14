@@ -16,7 +16,7 @@ function Controller(prefix?: string) {
 function Injectable(opt?: { scope?: 'SINGLETON' | 'REQUEST' | 'INSTANCE'; }) {
     return Decorators({
         class(target) {
-            registerInjectable(target, { ...opt });
+            registerInjectable(target, opt?.scope ?? 'SINGLETON');
         },
     });
 }

@@ -1,10 +1,7 @@
 import 'reflect-metadata/lite';
-import type { BunRequest, Server } from 'bun';
 import { bucket } from './bucket';
 import { type TSchema, Type, TypeGuard } from '@sinclair/typebox';
 import type { TParseOperation } from '@sinclair/typebox/value';
-import { Parse } from '@sinclair/typebox/value';
-import { parseQuery, parseBody } from './util';
 
 const BasicTypes = new Map<Function, TSchema>([
     [String, Type.String()],
@@ -46,7 +43,7 @@ function ParamType(type: any): ParamType {
         if (BasicTypes.has(type))
             return { schema: BasicTypes.get(type) };
         if (injectableFunctionMap.has(type))
-            return { identifier: type, scope: injectableFunctionMap.get(type)!.scope };
+            return { identifier: type, scope: injectableFunctionMap.get(type)! };
         return {};
     }
     if (TypeGuard.IsSchema(type))
@@ -113,102 +110,13 @@ function setParamType(target: object, propertyKey: string | symbol | undefined, 
     paramTypes[index] = { identifier, key, schema, operations };
 }
 
-const injectableFunctionMap = new WeakMap<Function, { scope?: 'SINGLETON' | 'REQUEST' | 'INSTANCE'; }>();
+const injectableFunctionMap = new WeakMap<Function, 'SINGLETON' | 'REQUEST' | 'INSTANCE'>();
 
-function registerInjectable(constructor: Function, opt: { scope?: 'SINGLETON' | 'REQUEST' | 'INSTANCE'; }) {
-    injectableFunctionMap.set(constructor, opt);
+function registerInjectable(constructor: Function, scope: 'SINGLETON' | 'REQUEST' | 'INSTANCE') {
+    injectableFunctionMap.set(constructor, scope);
 }
 
 const instanceBucket = new WeakMap<Function, any>();
-
-interface Context extends BunRequest {
-    _server: Server;
-    _fulfilled: boolean;
-    _set: {
-        readonly headers: Record<string, string>;
-        status?: number;
-        statusText?: string;
-    };
-    _rawResponse?: unknown;
-    _response?: Response;
-    _url?: URL;
-    _query?: Record<string, unknown>;
-    _body?: unknown;
-    _store?: Record<string, any>;
-    _instances?: WeakMap<Function, any>;
-}
-
-async function mapParams(ctx: Context, paramtypes: ParamType[]) {
-    const params: any[] = [];
-    for (const type of paramtypes) {
-        if (typeof type.identifier === 'function') {
-            if (type.scope === 'SINGLETON') {
-                params.push(construct(type.identifier));
-            } else {
-                if (type.scope === 'REQUEST' && ctx._instances?.has(type.identifier)) {
-                    params.push(ctx._instances.get(type.identifier));
-                } else {
-                    const instance = Reflect.construct(type.identifier, await mapParams(ctx, getParamTypes(type.identifier)));
-                    if (type.scope === 'REQUEST')
-                        (ctx._instances ??= new WeakMap()).set(type.identifier, instance);
-                    params.push(instance);
-                }
-            }
-        } else {
-            let value: any;
-            switch (type.identifier) {
-                case 'url': {
-                    value = ctx._url ??= new URL(ctx.url);
-                } break;
-                case 'request': {
-                    value = ctx;
-                } break;
-                case 'server': {
-                    value = ctx._server;
-                } break;
-                case 'rawResponse': {
-                    value = ctx._rawResponse;
-                } break;
-                case 'response': {
-                    value = ctx._response;
-                } break;
-                case 'responseInit': {
-                    value = ctx._set;
-                } break;
-                case 'store': {
-                    value = ctx._store ??= {};
-                } break;
-                case 'params': {
-                    value = ctx.params;
-                } break;
-                case 'query': {
-                    value = ctx._query ??= parseQuery((ctx._url ??= new URL(ctx.url)).searchParams);
-                } break;
-                case 'cookie': {
-                    value = ctx.cookies;
-                } break;
-                case 'body': {
-                    if (typeof ctx._body === 'undefined') {
-                        value = ctx._body = await parseBody(ctx);
-                    } else {
-                        value = ctx._body;
-                    }
-                } break;
-                default:
-                    throw new TypeError();
-            }
-            if (typeof type.key === 'string')
-                value = Object.hasOwn(value, type.key) ? value[type.key] : undefined;
-            if (TypeGuard.IsSchema(type.schema)) {
-                value = type.operations ?
-                    Parse(type.operations, type.schema, value) :
-                    Parse(type.schema, value);
-            }
-            params.push(value);
-        }
-    }
-    return params;
-}
 
 function construct(constructor: Function): any {
     if (instanceBucket.has(constructor))
@@ -224,5 +132,5 @@ function construct(constructor: Function): any {
 
 export { register };
 export { getParamTypes, setParamType };
-export { construct, mapParams, registerInjectable };
-export type { Context, ParamType };
+export { construct, registerInjectable };
+export type { ParamType };
