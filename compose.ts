@@ -83,15 +83,10 @@ function compileHandler(handler: Handler) {
     };
 }
 
-function routes(target: Function): Record<`/${string}`, (HTMLBundle & Response) | Response | RouterTypes.RouteHandler<string> | RouterTypes.RouteHandlerObject<string>> & {
-    meta: Record<`/${string}`, Partial<Record<RouterTypes.HTTPMethod | '', string | null>>>;
-} {
+function routes(target: Function): Record<`/${string}`, (HTMLBundle & Response) | Response | RouterTypes.RouteHandler<string> | RouterTypes.RouteHandlerObject<string>> {
     const controller = getController(target);
-    const meta: Record<`/${string}`, Partial<Record<RouterTypes.HTTPMethod | '', string | null>>> = {};
     const routes = Object.fromEntries(controller.handlers().map(([path, handlers]) => {
         if (handlers instanceof Map) {
-            for (const [method, handler] of handlers)
-                (meta[path] ??= {})[method] ??= handler.stack ?? null;
             return [path, Object.fromEntries(handlers.entries().map(([method, handler]) => {
                 if ('paramtypes' in handler)
                     return [method, compileHandler(handler)];
@@ -102,7 +97,6 @@ function routes(target: Function): Record<`/${string}`, (HTMLBundle & Response) 
                 return [method, newResponse(construct(target)[propertyKey], init)];
             }))];
         } else {
-            (meta[path] ??= {})[''] ??= handlers.stack ?? null;
             if ('paramtypes' in handlers)
                 return [path, compileHandler(handlers)];
             const { propertyKey, controller: { target }, init } = handlers;
@@ -112,10 +106,6 @@ function routes(target: Function): Record<`/${string}`, (HTMLBundle & Response) 
             return [path, newResponse(construct(target)[propertyKey], init)];
         }
     }));
-    Reflect.defineProperty(routes, 'meta', {
-        value: meta,
-        enumerable: false,
-    });
     return routes as any;
 }
 

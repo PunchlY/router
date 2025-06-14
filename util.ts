@@ -162,17 +162,7 @@ function getMethodType(value: unknown) {
     return 'Function';
 }
 
-function getStack() {
-    const store = {} as { stack: string; };
-    Error.captureStackTrace(store);
-    const match = store.stack.match(/(?<=\(bun:wrap.+?\s+at ).*?(?=\n)/s);
-    if (!match)
-        return;
-    return match[0];
-}
-
 export { Decorators };
 export { type StreamLike, Stream, newResponse };
 export { parseBody, parseQuery };
 export { getMethodType, type MethodType };
-export { getStack };

@@ -83,10 +83,11 @@ function setParamType(target: object, propertyKey: string | symbol | undefined, 
     if (index >= paramTypes.length || !paramTypes[index])
         throw new Error('Index is out of bounds for parameter types');
 
-    if (typeof paramTypes[index].identifier === 'function')
+    const paramType = paramTypes[index];
+    if (typeof paramType.identifier === 'function')
         throw new TypeError();
 
-    if (paramTypes[index].identifier)
+    if (paramType.identifier)
         throw new Error('Parameter type identifier is already defined');
 
     if (typeof identifier !== 'string')
@@ -96,7 +97,7 @@ function setParamType(target: object, propertyKey: string | symbol | undefined, 
         throw new TypeError();
 
     if (typeof schema === 'undefined')
-        schema = paramTypes[index].schema;
+        schema = paramType.schema;
     else if (typeof schema === 'boolean')
         schema = schema ? paramTypes[index].schema : undefined;
     else if (!TypeGuard.IsSchema(schema))

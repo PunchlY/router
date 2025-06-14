@@ -1,7 +1,7 @@
 import 'reflect-metadata/lite';
 import { instanceBucket } from './bucket';
 import { getParamTypes, type ParamType } from './service';
-import { getMethodType, getStack, type MethodType } from './util';
+import { getMethodType, type MethodType } from './util';
 import type { HeadersInit } from 'bun';
 
 const RequestLifecycleHook = ['beforeHandle', 'mapResponse', 'afterHandle'] as const;
@@ -10,8 +10,6 @@ type RequestLifecycleHook = typeof RequestLifecycleHook[number];
 type HTTPMethod = import('bun').RouterTypes.HTTPMethod;
 
 interface Handler {
-    stack?: string;
-
     controller: Controller;
     propertyKey: string | symbol;
     type: MethodType,
@@ -23,8 +21,6 @@ interface Handler {
     };
 }
 interface Static {
-    stack?: string;
-
     controller: Controller;
     propertyKey: string | symbol;
     init: {
@@ -35,8 +31,6 @@ interface Static {
 }
 
 class Controller {
-    declare stack?: string;
-
     #prefix?: '/' | `/${string}/`;
     setPrefix(value = '') {
         if (typeof this.#prefix === 'string')
@@ -44,9 +38,6 @@ class Controller {
         if (typeof value !== 'string')
             throw new TypeError();
         this.#prefix = value.replaceAll(/^(?!\/)|(?<!\/)$/g, '/').replaceAll('$', '$$$$') as '/' | `/${string}/`;
-
-        if (process.env.NODE_ENV !== 'production')
-            this.stack = getStack();
     }
 
     constructor(public readonly target: Function) {
@@ -148,9 +139,6 @@ class Controller {
                 headers: Object.fromEntries(new Headers(init?.headers)),
             },
         });
-
-        if (process.env.NODE_ENV !== 'production')
-            (this.#routes.get(path) as Handler)!.stack = getStack();
     }
     route(path: string, { method, propertyKey, init, value }: {
         propertyKey: string | symbol;
@@ -178,11 +166,8 @@ class Controller {
                 headers: Object.fromEntries(new Headers(init?.headers)),
             },
         });
-
-        if (process.env.NODE_ENV !== 'production')
-            route.get(method)!.stack = getStack();
     }
-    hook(options: {
+    hook({ hook: name, propertyKey, init, value }: {
         hook: RequestLifecycleHook;
         propertyKey: string | symbol;
         value: unknown,
@@ -192,7 +177,6 @@ class Controller {
             statusText?: string;
         };
     }) {
-        const { hook: name, propertyKey, init, value } = options;
         if (!RequestLifecycleHook.includes(name))
             throw new Error(`Invalid hook: ${name}`);
         let hooks = this.hooks.get(name);
@@ -208,9 +192,6 @@ class Controller {
                 headers: Object.fromEntries(new Headers(init?.headers)),
             },
         });
-
-        if (process.env.NODE_ENV !== 'production')
-            hooks[hooks.length - 1]!.stack = getStack();
     }
 }
 
