@@ -98,7 +98,7 @@ function getMeta({ controller: { target }, propertyKey, init, type }: Handler) {
     return {
         instance: construct(target),
         propertyKey,
-        paramtypes: getParamTypes(target, propertyKey),
+        paramtypes: getParamTypes(target.prototype, propertyKey),
         init,
         isGenerator: type === 'Generator',
     };
