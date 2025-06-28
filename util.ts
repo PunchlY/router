@@ -57,26 +57,8 @@ function Decorators(options: DecoratorsOptions | (keyof DecoratorsOptions)[], fn
         const type = decoratorTypeOf(arguments);
         if (!Object.hasOwn(options, type))
             throw new Error('Decorator type not found');
-        options[decoratorTypeOf(arguments)]!(target, propertyKey, descriptor);
+        options[type]!(target, propertyKey, descriptor);
     };
-}
-
-type StreamLike = IterableIterator<string | ArrayBuffer | ArrayBufferView<ArrayBufferLike>> | AsyncIterableIterator<string | ArrayBuffer | ArrayBufferView<ArrayBufferLike>>;
-class Stream {
-    #firstValue;
-    #values;
-    #used = false;
-    constructor(firstValue: string | ArrayBuffer | ArrayBufferView, values: StreamLike) {
-        this.#firstValue = firstValue;
-        this.#values = values;
-    }
-    async *[Symbol.asyncIterator]() {
-        if (this.#used)
-            return;
-        this.#used = true;
-        yield this.#firstValue;
-        return yield* this.#values;
-    }
 }
 
 function newResponse(data: unknown, init?: {
@@ -87,7 +69,7 @@ function newResponse(data: unknown, init?: {
     switch (typeof data) {
         case 'string':
             return new Response(data, init);
-        case 'object':
+        case 'object': {
             if (data instanceof Response) {
                 const newHeaders = new Headers(data.headers);
                 for (const name in init?.headers)
@@ -105,10 +87,9 @@ function newResponse(data: unknown, init?: {
                 || data instanceof ArrayBuffer
                 || data instanceof URLSearchParams
                 || data instanceof FormData
-                || data instanceof Stream
                 || ArrayBuffer.isView(data))
                 return new Response(data as any, init);
-            break;
+        } break;
     }
     return Response.json(data, init);
 }
@@ -146,5 +127,5 @@ async function parseBody(request: Request) {
 };
 
 export { Decorators };
-export { type StreamLike, Stream, newResponse };
+export { newResponse };
 export { parseBody, parseQuery };

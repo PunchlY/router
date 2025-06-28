@@ -1,4 +1,4 @@
-import { Mount, Route, RequestUrl, Params, Query, Store, Hook, Server, Injectable, Use, Controller, RawResponse } from './decorators';
+import { Mount, Route, RequestUrl, Params, Query, Store, Hook, Server, Injectable, Use, Controller, RawResponse, Inject } from './decorators';
 import { routes } from './compose';
 
 @Injectable({ scope: 'REQUEST' })
@@ -20,8 +20,8 @@ class DB {
 
 @Controller()
 class API {
-    constructor(public db: DB) {
-    }
+    @Inject()
+    readonly db!: DB;
 
     @Route('GET', '/ip')
     test(request: Request, server: Server) {
@@ -43,7 +43,7 @@ class Logger {
     }
 
     @Hook('afterHandle')
-    log({ method }: Request, { pathname }: RequestUrl, { ok, status }: Response, { loggerTimeStart }: Store<{ loggerTimeStart: number; }>) {
+    log({ method }: Request, { pathname }: RequestUrl, { body, ok, status }: Response, { loggerTimeStart }: Store<{ loggerTimeStart: number; }>) {
         console[ok ? 'debug' : 'error']('%s %d %s %fms', method, status, pathname, (Bun.nanoseconds() - loggerTimeStart) / 1000000);
     }
 }
@@ -67,10 +67,13 @@ class JSX {
 }
 
 @Use(Logger)
-@Mount('api', API)
-@Mount('jsx', JSX)
 @Controller()
 class Main {
+
+    @Mount()
+    readonly api!: API;
+    @Mount()
+    readonly jsx!: JSX;
 
     @Mount('/')
     index = 'Hi';
@@ -80,7 +83,7 @@ class Main {
             'Access-Control-Allow-Methods': 'GET',
         },
     })
-    __id = null;
+    declare _id: void;
 
     @Route('GET', '/id/:id', {
         headers: { 'x-powered-by': 'benchmark' },

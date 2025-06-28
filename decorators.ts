@@ -1,6 +1,6 @@
 import { getController, type HTTPMethod, type RequestLifecycleHook } from './controller';
 import type { TSchema } from '@sinclair/typebox';
-import { setParamType, registerInjectable, register } from './service';
+import { registerInjectable, register, setParamType } from './service';
 import type { TParseOperation } from '@sinclair/typebox/value';
 import { type HeadersInit } from 'bun';
 import { Decorators } from './util';
@@ -18,7 +18,7 @@ function functionType(value: any) {
 function Controller(opt?: { prefix?: string; }) {
     return Decorators({
         class(target) {
-            getController(target).setPrefix(opt?.prefix);
+            getController(target).init({ ...opt, prefix: '/' });
             registerInjectable(target, 'SINGLETON');
         },
     });
@@ -32,6 +32,14 @@ function Injectable(opt?: { scope?: 'SINGLETON' | 'REQUEST' | 'INSTANCE'; }) {
     });
 }
 
+function Inject() {
+    return Decorators({
+        property({ constructor }, propertyKey) {
+            getController(constructor).inject(propertyKey);
+        },
+    });
+}
+
 function Use(controller: Function) {
     return Decorators({
         class(target) {
@@ -40,23 +48,22 @@ function Use(controller: Function) {
     });
 }
 
-function Mount(path: string, controller: Function): Decorators<'class'>;
-function Mount(path: string, init?: {
+function Mount(path?: string, init?: {
     headers?: HeadersInit;
     status?: number;
     statusText?: string;
-}): Decorators<'property' | 'method'>;
-function Mount(path: string, init?: any) {
-    return Decorators({
-        class(target) {
-            getController(target).mountController(path, getController(init));
-        },
-        method({ constructor }, propertyKey, { value }) {
-            getController(constructor).mount(path, { propertyKey, init, type: functionType(value), });
-        },
-        property({ constructor }, propertyKey) {
-            getController(constructor).mount(path, { propertyKey, init, type: 'Static' });
-        },
+}) {
+    return Decorators(['method', 'property'], ({ constructor }, propertyKey, descriptor?: { value?: unknown; }) => {
+        if (!path) {
+            if (typeof propertyKey !== 'string')
+                throw new TypeError();
+            path = propertyKey;
+        }
+        getController(constructor).mount(path, {
+            propertyKey,
+            init,
+            type: descriptor?.value ? functionType(descriptor.value) : 'Static',
+        });
     });
 }
 
@@ -77,13 +84,18 @@ function Route(method: HTTPMethod, path: string, init?: {
     status?: number;
     statusText?: string;
 }) {
-    return Decorators({
-        method({ constructor }, propertyKey, { value }) {
-            getController(constructor).route(path, { propertyKey, method, init, type: functionType(value), });
-        },
-        property({ constructor }, propertyKey) {
-            getController(constructor).route(path, { propertyKey, method, init, type: 'Static' });
-        },
+    return Decorators(['method', 'property'], ({ constructor }, propertyKey, descriptor?: { value?: unknown; }) => {
+        if (!path) {
+            if (typeof propertyKey !== 'string')
+                throw new TypeError();
+            path = propertyKey;
+        }
+        getController(constructor).route(path, {
+            propertyKey,
+            method,
+            init,
+            type: descriptor?.value ? functionType(descriptor.value) : 'Static',
+        });
     });
 }
 
@@ -208,6 +220,7 @@ const Cookie = register('cookie');
 export {
     Controller,
     Injectable,
+    Inject,
     Use,
     Mount,
     Hook,

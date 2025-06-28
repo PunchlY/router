@@ -1,6 +1,6 @@
-import 'reflect-metadata/lite';
 import type { HeadersInit } from 'bun';
 import { instanceBucket } from './bucket';
+import { construct, getType } from './service';
 
 const RequestLifecycleHook = ['beforeHandle', 'mapResponse', 'afterHandle'] as const;
 type RequestLifecycleHook = typeof RequestLifecycleHook[number];
@@ -29,18 +29,31 @@ interface Static {
 }
 
 class Controller {
-    #prefix?: '/' | `/${string}/`;
-    setPrefix(value = '') {
-        if (typeof this.#prefix === 'string')
-            throw new Error('Prefix has already been set');
-        if (typeof value !== 'string')
-            throw new TypeError();
-        this.#prefix = value.replaceAll(/^(?!\/)|(?<!\/)$/g, '/').replaceAll('$', '$$$$') as '/' | `/${string}/`;
-    }
-
     constructor(public readonly target: Function) {
         if (typeof target !== 'function')
             throw new TypeError();
+    }
+
+    readonly injectList = new Map<string | symbol, Function>();
+    inject(propertyKey: string | symbol) {
+        const type = getType(this.target.prototype, propertyKey);
+        if (typeof type !== 'function')
+            throw new TypeError();
+        this.injectList.set(propertyKey, type);
+    }
+
+    #prefix?: '/' | `/${string}/`;
+    init({ prefix }: { prefix: string; }) {
+        if (typeof this.#prefix === 'string')
+            throw new Error('Prefix has already been set');
+        if (typeof prefix !== 'string')
+            throw new TypeError();
+        this.#prefix = prefix.replaceAll(/^(?!\/)|(?<!\/)$/g, '/').replaceAll('$', '$$$$') as '/' | `/${string}/`;
+        for (const [propertyKey, type] of this.injectList) {
+            Reflect.defineProperty(this.target.prototype, propertyKey, {
+                value: construct(type),
+            });
+        }
     }
 
     #use: Set<Controller> = new Set();
@@ -121,6 +134,14 @@ class Controller {
         path = path.replace(/^\/?/, '/');
         if (this.#routes.has(path))
             throw new Error('Route already exists for this path');
+        if (type === 'Static') {
+            const type = getType(this.target.prototype, propertyKey);
+            if (typeof type === 'function' && isController(type)) {
+                this.mountController(path, getController(type));
+                this.injectList.set(propertyKey, type);
+                return;
+            }
+        }
         this.#routes.set(path, {
             controller: this,
             propertyKey,
@@ -182,7 +203,11 @@ class Controller {
     }
 }
 
-const getController = instanceBucket(new WeakMap<Function, Controller>(), Controller);
+const controllerList = new WeakMap<Function, Controller>();
+const getController = instanceBucket(controllerList, Controller);
+function isController(controller: Function) {
+    return controllerList.has(controller);
+}
 
 export type { Handler, Static, Controller };
 export { getController };

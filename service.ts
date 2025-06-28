@@ -48,7 +48,7 @@ function ParamType(type: any): ParamType {
     }
     if (TypeGuard.IsSchema(type))
         return { schema: type };
-    throw new TypeError();
+    return {};
 }
 
 const designRegistry = bucket(new WeakMap<object, (propertyKey?: string | symbol) => ParamType[]>(), (target: object) => bucket(new Map<string | symbol | undefined, ParamType[]>(), (propertyKey) => {
@@ -59,6 +59,10 @@ const designRegistry = bucket(new WeakMap<object, (propertyKey?: string | symbol
         throw new TypeError();
     return Array.from(paramTypes, ParamType);
 }));
+
+function getType(target: object, propertyKey: string | symbol) {
+    return Reflect.getOwnMetadata('design:type', target, propertyKey);
+}
 
 function getParamTypes(target: object, propertyKey?: string | symbol) {
     return designRegistry(target)(propertyKey);
@@ -137,6 +141,6 @@ function construct(constructor: Function): any {
 }
 
 export { register };
-export { getParamTypes, setParamType };
+export { getType, getParamTypes, setParamType };
 export { construct, registerInjectable };
-export type { ParamType };
+export { ParamType };

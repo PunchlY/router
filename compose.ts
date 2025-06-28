@@ -1,7 +1,7 @@
 import type { Server, RouterTypes, HTMLBundle, BunRequest } from 'bun';
 import { type Handler, type Static, getController } from './controller';
 import { construct, getParamTypes, type ParamType } from './service';
-import { newResponse, parseBody, parseQuery, Stream, type StreamLike } from './util';
+import { newResponse, parseBody, parseQuery } from './util';
 import { TypeGuard } from '@sinclair/typebox';
 import { Parse } from '@sinclair/typebox/value';
 
@@ -72,11 +72,9 @@ async function mapParams(ctx: Context, paramtypes: ParamType[]) {
                 value = ctx.cookies;
             } break;
             case 'body': {
-                if (typeof ctx._body === 'undefined') {
-                    value = ctx._body = await parseBody(ctx);
-                } else {
-                    value = ctx._body;
-                }
+                if (typeof ctx._body === 'undefined')
+                    ctx._body = await parseBody(ctx);
+                value = ctx._body;
             } break;
             default:
                 throw new TypeError();
@@ -104,11 +102,28 @@ function getMeta({ controller: { target }, propertyKey, init, type }: Handler) {
     };
 }
 
+type StreamLike = IterableIterator<string | ArrayBuffer | ArrayBufferView<ArrayBufferLike>> | AsyncIterableIterator<string | ArrayBuffer | ArrayBufferView<ArrayBufferLike>>;
 async function onHandle(ctx: Context, { instance, propertyKey, paramtypes, isGenerator, init }: HandlerMeta) {
     const res = await instance[propertyKey](...await mapParams(ctx, paramtypes));
     if (isGenerator) {
         const { value, done } = await (res as StreamLike).next();
-        ctx._rawResponse = done ? value : new Stream(value, res as StreamLike);
+        ctx._rawResponse = done ? value : new ReadableStream({
+            async start(controller) {
+                let end = false;
+                ctx.signal.addEventListener('abort', () => {
+                    end = true;
+                    try { controller.close(); } catch { }
+                });
+                typeof value !== 'undefined' && controller.enqueue(value);
+                for await (const chunk of res as StreamLike) {
+                    if (end)
+                        break;
+                    typeof chunk !== 'undefined' && controller.enqueue(chunk);
+                    await Bun.sleep(0);
+                }
+                try { controller.close(); } catch { }
+            },
+        });
     } else if (typeof res === 'undefined') {
         return false;
     } else {
@@ -161,7 +176,8 @@ function compileHandler(handler: Handler) {
             if (fulfilled && afterHandle) {
                 ctx._set = { headers: {} }, fulfilled = false;
                 for (const meta of afterHandle) {
-                    await onHandle(ctx, meta);
+                    if (!await onHandle(ctx, meta))
+                        continue;
                     ctx._response = newResponse(ctx._rawResponse, ctx._set);
                     ctx._rawResponse = undefined;
                     fulfilled = true;
