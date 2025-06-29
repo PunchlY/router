@@ -1,4 +1,4 @@
-import { Mount, Route, RequestUrl, Params, Query, Store, Hook, Server, Injectable, Use, Controller, RawResponse, Inject } from './decorators';
+import { Route, RequestUrl, Params, Query, Store, Hook, Server, Injectable, Use, Controller, RawResponse, Inject } from './decorators';
 import { routes } from './compose';
 
 @Injectable({ scope: 'REQUEST' })
@@ -23,14 +23,16 @@ class API {
     @Inject()
     readonly db!: DB;
 
-    @Route('GET', '/ip')
-    test(request: Request, server: Server) {
+    @Route('GET', { status: 403 })
+    declare '/*': void;
+
+    @Route('GET')
+    '/ip'(request: Request, server: Server) {
         return server.requestIP(request);
     }
-    @Route('GET', '/id/:id', {
-        headers: { 'x-powered-by': 'benchmark' },
-    })
-    id(user: User) {
+
+    @Route('GET', { headers: { 'content-type': 'text/plain;charset=UTF-8', 'x-powered-by': 'benchmark' } })
+    '/id/:id'(user: User) {
         return `${user.id} ${user.name}`;
     }
 }
@@ -55,8 +57,8 @@ class JSX {
         return `<body>${response}</body>`;
     }
 
-    @Route('GET', '/')
-    jsx() {
+    @Route('GET')
+    '/*'() {
         return {
             $$typeof: Symbol.for('react.transitional.element'),
             toString() {
@@ -69,30 +71,23 @@ class JSX {
 @Use(Logger)
 @Controller()
 class Main {
-
-    @Mount()
+    @Route()
     readonly api!: API;
-    @Mount()
+    @Route()
     readonly jsx!: JSX;
 
-    @Mount('/')
-    index = 'Hi';
+    @Route()
+    '/' = 'Hi';
 
-    @Route('OPTIONS', '/id/:id', {
-        headers: {
-            'Access-Control-Allow-Methods': 'GET',
-        },
-    })
-    declare _id: void;
+    @Route('OPTIONS', '/id/:id', { headers: { 'Access-Control-Allow-Methods': 'GET' } })
+    declare private _id: void;
 
-    @Route('GET', '/id/:id', {
-        headers: { 'x-powered-by': 'benchmark' },
-    })
+    @Route('GET', '/id/:id', { headers: { 'content-type': 'text/plain;charset=UTF-8', 'x-powered-by': 'benchmark' } })
     id(@Params('id', { operations: [] }) id: string, @Query('name', { operations: [] }) name: string) {
         return `${id} ${name}`;
     }
 
-    @Route('POST', '/json')
+    @Route('POST')
     json(require: Request) {
         return require.json();
     }

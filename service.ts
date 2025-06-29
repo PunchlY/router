@@ -124,23 +124,36 @@ function registerInjectable(constructor: Function, scope: 'SINGLETON' | 'REQUEST
     injectableFunctionMap.set(constructor, scope);
 }
 
-const instanceBucket = new WeakMap<Function, any>();
+const injectBucket = bucket(new WeakMap<object, Set<string | symbol>>(), () => new Set());
+function inject(target: object, propertyKey: string | symbol, type: Function) {
+    if (injectBucket(target).has(propertyKey))
+        return;
+    if (Reflect.getOwnPropertyDescriptor(target, propertyKey))
+        throw new TypeError();
+    injectBucket(target).add(propertyKey);
+    Object.defineProperty(target, propertyKey, {
+        configurable: true,
+        get() {
+            if (!Reflect.getOwnPropertyDescriptor(target, propertyKey)?.configurable)
+                throw new TypeError();
+            const value = construct(type);
+            Object.defineProperty(target, propertyKey, { value });
+            return value;
+        },
+    });
+}
 
-function construct(constructor: Function): any {
-    if (instanceBucket.has(constructor))
-        return instanceBucket.get(constructor);
+const construct = bucket(new WeakMap<Function, any>(), (constructor) => {
     if (injectableFunctionMap.get(constructor) !== 'SINGLETON')
         throw new TypeError();
-    const instance = Reflect.construct(constructor, getParamTypes(constructor).map((constructor) => {
+    return Reflect.construct(constructor, getParamTypes(constructor).map((constructor): any => {
         if (typeof constructor.identifier !== 'function')
             throw new TypeError();
         return construct(constructor.identifier);
     }));
-    instanceBucket.set(constructor, instance);
-    return instance;
-}
+});
 
 export { register };
 export { getType, getParamTypes, setParamType };
-export { construct, registerInjectable };
+export { construct, registerInjectable, inject };
 export { ParamType };

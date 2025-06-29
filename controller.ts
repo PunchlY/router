@@ -1,31 +1,78 @@
-import type { HeadersInit } from 'bun';
+import type { HeadersInit, HTMLBundle } from 'bun';
 import { instanceBucket } from './bucket';
-import { construct, getType } from './service';
+import { construct, getParamTypes, getType, inject } from './service';
+import { newResponse } from './util';
 
-const RequestLifecycleHook = ['beforeHandle', 'mapResponse', 'afterHandle'] as const;
+const RequestLifecycleHook = ['beforeHandle', 'afterHandle', 'mapResponse'] as const;
 type RequestLifecycleHook = typeof RequestLifecycleHook[number];
 
 type HTTPMethod = import('bun').RouterTypes.HTTPMethod;
 
-interface Handler {
-    type: 'Generator' | 'Function',
-    controller: Controller;
-    propertyKey: string | symbol;
-    init: {
-        headers?: Record<string, string>;
-        status?: number;
-        statusText?: string;
+interface Init {
+    headers?: HeadersInit;
+    status?: number;
+    statusText?: string;
+};
+function Init({ controller: { opt }, init }: Route) {
+    if (!opt)
+        throw new Error('Cannot use a disabled controller');
+    return {
+        ...init,
+        ...opt.init,
+        headers: {
+            ...Object.fromEntries(new Headers(init?.headers)),
+            ...Object.fromEntries(new Headers(opt.init?.headers)),
+        },
     };
 }
-interface Static {
-    type: 'Static';
+
+type Meta = ReturnType<typeof Meta>;
+function Meta(handler: Handler) {
+    let init = Init(handler);
+    if (handler.env) for (const _init of handler.env.map(Init)) {
+        init = {
+            ...init,
+            ..._init,
+            headers: { ...init.headers, ..._init.headers },
+        };
+    }
+    const { controller: { target }, propertyKey, type } = handler;
+    return {
+        instance: construct(target),
+        propertyKey,
+        paramtypes: getParamTypes(target.prototype, propertyKey),
+        init,
+        isGenerator: type === 'Generator',
+    };
+}
+
+type StaticResource = HTMLBundle | Response;
+function StaticResource({ propertyKey, controller: { target }, init }: Static) {
+    const value = construct(target)[propertyKey];
+    if (Object.prototype.toString.call(value) === '[object HTMLBundle]')
+        return value as HTMLBundle;
+    return newResponse(value, {
+        ...init,
+        headers: Object.fromEntries(new Headers(init?.headers)),
+    });
+}
+
+interface Route {
+    index: number;
     controller: Controller;
     propertyKey: string | symbol;
-    init: {
-        headers?: Record<string, string>;
+    init?: {
+        headers?: HeadersInit;
         status?: number;
         statusText?: string;
     };
+    env?: Route[];
+}
+interface Handler extends Route {
+    type: 'Generator' | 'Function';
+}
+interface Static extends Route {
+    type: 'Static';
 }
 
 class Controller {
@@ -34,42 +81,77 @@ class Controller {
             throw new TypeError();
     }
 
-    readonly injectList = new Map<string | symbol, Function>();
-    inject(propertyKey: string | symbol) {
-        const type = getType(this.target.prototype, propertyKey);
-        if (typeof type !== 'function')
-            throw new TypeError();
-        this.injectList.set(propertyKey, type);
+    opt?: {
+        prefix?: string;
+        init?: Init;
+    };
+    init(opt: {
+        prefix?: string;
+        init?: Init;
+    }) {
+        if (this.opt)
+            throw new Error('Controller has been initialized');
+        this.opt = opt;
     }
 
-    #prefix?: '/' | `/${string}/`;
-    init({ prefix }: { prefix: string; }) {
-        if (typeof this.#prefix === 'string')
-            throw new Error('Prefix has already been set');
-        if (typeof prefix !== 'string')
-            throw new TypeError();
-        this.#prefix = prefix.replaceAll(/^(?!\/)|(?<!\/)$/g, '/').replaceAll('$', '$$$$') as '/' | `/${string}/`;
-        for (const [propertyKey, type] of this.injectList) {
-            Reflect.defineProperty(this.target.prototype, propertyKey, {
-                value: construct(type),
-            });
-        }
-    }
+    #use: Controller[] = [];
 
-    #use: Set<Controller> = new Set();
-
-    readonly hooks: Map<RequestLifecycleHook, Handler[]> = new Map();
+    #handlerIndex = 0;
+    readonly #hooks: Map<RequestLifecycleHook, Handler[]> = new Map();
     readonly #routes: Map<string, Map<HTTPMethod, Handler | Static> | Handler | Static> = new Map();
 
-    *handlers() {
-        if (!this.#prefix)
-            throw new Error('Cannot use a disabled controller');
-        for (const [path, handlers] of this.#routes) {
-            yield [path.replace(/^\/?/, this.#prefix) as `/${string}`, handlers] as const;
+    *hooks(name: RequestLifecycleHook, { index, env }: Route): Generator<Handler> {
+        switch (name) {
+            case 'beforeHandle': {
+                if (env) for (const handler of env.toReversed()) {
+                    yield* handler.controller.hooks(name, handler);
+                }
+                for (const controller of this.#use) {
+                    if (controller.#hooks.has(name))
+                        yield* controller.#hooks.get(name)!;
+                }
+                if (this.#hooks.has(name)) for (const handler of this.#hooks.get(name)!) {
+                    if (handler.index < index)
+                        yield handler;
+                }
+            } break;
+            case 'afterHandle':
+            case 'mapResponse': {
+                if (this.#hooks.has(name)) for (const handler of this.#hooks.get(name)!) {
+                    if (handler.index > index)
+                        yield handler;
+                }
+                for (const controller of this.#use) {
+                    if (controller.#hooks.has(name))
+                        yield* controller.#hooks.get(name)!;
+                }
+                if (env) for (const handler of env) {
+                    yield* handler.controller.hooks(name, handler);
+                }
+            } break;
         }
     }
 
-    #route(path: string) {
+    *handlers() {
+        if (!this.opt)
+            throw new Error('Cannot use a disabled controller');
+        const prefix = String(this.opt.prefix ?? '/').replaceAll(/^(?!\/)|(?<!\/)$/g, '/').replaceAll('$', '$$$$') as '/' | `/${string}/`;
+        for (const [path, handlers] of this.#routes) {
+            yield [path.replace(/^\/?/, prefix) as `/${string}`, handlers] as const;
+        }
+    }
+
+    map<T>(cb: (handler: Handler | Static) => T): Record<`/${string}`, T | Record<HTTPMethod, T>> {
+        return Object.fromEntries(this.handlers().map(([path, handlers]) => {
+            if (handlers instanceof Map) {
+                return [path, Object.fromEntries(handlers.entries().map(([method, handler]) => [method, cb(handler)]))];
+            } else {
+                return [path, cb(handlers)];
+            }
+        }));
+    }
+
+    #methodRoute(path: string) {
         let route: Map<HTTPMethod, Handler | Static> | Handler | Static;
         if (this.#routes.has(path)) {
             route = this.#routes.get(path)!;
@@ -82,123 +164,116 @@ class Controller {
     }
 
     use(router: Controller) {
-        if (!(router instanceof Controller))
-            throw new TypeError();
-        if (!router.#prefix)
+        if (!router.opt)
             throw new Error('Cannot use a disabled controller');
-        if (this.#use.has(router))
-            throw new Error('Controller is already in use');
-        this.#use.add(router);
-        this.#use = this.#use.union(router.#use);
-        for (const [type, handler] of router.hooks) {
-            let hooks = this.hooks.get(type);
-            if (!hooks)
-                this.hooks.set(type, hooks = []);
-            hooks.push(...handler);
-        }
-        this.mountController('/', router);
+        this.#use.push(router);
+        this.#handlerIndex = NaN;
+        this.mount('/', { propertyKey: 'constructor', router });
     }
-    mountController(path: string, router: Controller) {
-        if (!(router instanceof Controller))
-            throw new TypeError();
+
+    mount(path: string, { propertyKey, router, init }: {
+        propertyKey: string | symbol;
+        router: Controller;
+        init?: Init;
+    }) {
         path = path.replace(/^\/?/, '/');
-        if (!router.#prefix)
+        if (!router.opt)
             throw new Error('Cannot mount a disabled controller');
         const prefix = path.replace(/^(?!\/)|(?<!\/)$/g, '/').replaceAll('$', '$$$$');
         for (let [path, handler] of router.handlers()) {
             path = path.replace(/^\/?/, prefix) as `/${string}`;
             if (handler instanceof Map) {
-                const route = this.#route(path);
-                for (const [method, data] of handler) {
+                const route = this.#methodRoute(path);
+                for (let [method, data] of handler) {
                     if (route.has(method))
                         throw new Error('Route already exists for this method');
-                    route.set(method, data);
+                    route.set(method, {
+                        ...data,
+                        env: [
+                            ...(data.env ?? []),
+                            {
+                                index: this.#handlerIndex++,
+                                controller: this,
+                                propertyKey,
+                                init,
+                            },
+                        ],
+                    });
                 }
             } else {
                 if (this.#routes.has(path))
                     throw new Error('Route already exists for this path');
-                this.#routes.set(path, handler);
+                this.#routes.set(path, {
+                    ...handler,
+                    env: [
+                        ...(handler.env ?? []),
+                        {
+                            index: this.#handlerIndex++,
+                            controller: this,
+                            propertyKey,
+                            init,
+                        },
+                    ],
+                });
             }
         }
     }
 
-    mount(path: string, { propertyKey, init, type }: {
-        propertyKey: string | symbol;
-        type: 'Generator' | 'Function' | 'Static',
-        init?: {
-            headers?: HeadersInit;
-            status?: number;
-            statusText?: string;
-        };
-    }) {
-        path = path.replace(/^\/?/, '/');
-        if (this.#routes.has(path))
-            throw new Error('Route already exists for this path');
-        if (type === 'Static') {
-            const type = getType(this.target.prototype, propertyKey);
-            if (typeof type === 'function' && isController(type)) {
-                this.mountController(path, getController(type));
-                this.injectList.set(propertyKey, type);
-                return;
-            }
-        }
-        this.#routes.set(path, {
-            controller: this,
-            propertyKey,
-            type,
-            init: {
-                ...init,
-                headers: Object.fromEntries(new Headers(init?.headers)),
-            },
-        });
-    }
     route(path: string, { method, propertyKey, init, type }: {
         propertyKey: string | symbol;
-        method: HTTPMethod;
+        method?: HTTPMethod;
         type: 'Generator' | 'Function' | 'Static',
-        init?: {
-            headers?: HeadersInit;
-            status?: number;
-            statusText?: string;
-        };
+        init?: Init;
     }) {
         path = path.replace(/^\/?/, '/');
-        const route = this.#route(path);
+        if (typeof method === 'undefined') {
+            if (this.#routes.has(path))
+                throw new Error('Route already exists for this path');
+            if (type === 'Static') {
+                const type = getType(this.target.prototype, propertyKey);
+                if (isController(type)) {
+                    this.mount(path, { propertyKey, router: getController(type), init });
+                    inject(this.target.prototype, propertyKey, type);
+                    return;
+                }
+            }
+            this.#routes.set(path, {
+                index: this.#handlerIndex++,
+                controller: this,
+                propertyKey,
+                type,
+                init,
+            });
+            return;
+        }
+        const route = this.#methodRoute(path);
         if (route.has(method))
             throw new Error('Route already exists for this method');
         route.set(method, {
+            index: this.#handlerIndex++,
             controller: this,
             type,
             propertyKey,
-            init: {
-                ...init,
-                headers: Object.fromEntries(new Headers(init?.headers)),
-            },
+            init,
         });
     }
     hook({ hook: name, propertyKey, init, type }: {
         hook: RequestLifecycleHook;
         propertyKey: string | symbol;
         type: 'Generator' | 'Function',
-        init?: {
-            headers?: HeadersInit;
-            status?: number;
-            statusText?: string;
-        };
+        init?: Init;
     }) {
         if (!RequestLifecycleHook.includes(name))
             throw new Error(`Invalid hook: ${name}`);
-        let hooks = this.hooks.get(name);
+        let hooks = this.#hooks.get(name);
         if (!hooks)
-            this.hooks.set(name, hooks = []);
+            this.#hooks.set(name, hooks = []);
         hooks.push({
+            index: this.#handlerIndex++,
             controller: this,
             propertyKey,
             type,
-            init: {
-                ...init,
-                headers: Object.fromEntries(new Headers(init?.headers)),
-            },
+            init,
         });
     }
 }
@@ -206,9 +281,9 @@ class Controller {
 const controllerList = new WeakMap<Function, Controller>();
 const getController = instanceBucket(controllerList, Controller);
 function isController(controller: Function) {
-    return controllerList.has(controller);
+    return typeof controller === 'function' && controllerList.has(controller);
 }
 
-export type { Handler, Static, Controller };
-export { getController };
-export type { RequestLifecycleHook, HTTPMethod };
+export type { Route, Handler, Static, Controller };
+export { getController, Init, Meta, StaticResource };
+export type { HTTPMethod, RequestLifecycleHook };

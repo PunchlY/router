@@ -1,5 +1,5 @@
 import type { Server, RouterTypes, HTMLBundle, BunRequest } from 'bun';
-import { type Handler, type Static, getController } from './controller';
+import { type Handler, Meta, getController, StaticResource } from './controller';
 import { construct, getParamTypes, type ParamType } from './service';
 import { newResponse, parseBody, parseQuery } from './util';
 import { TypeGuard } from '@sinclair/typebox';
@@ -91,19 +91,8 @@ async function mapParams(ctx: Context, paramtypes: ParamType[]) {
     return params;
 }
 
-type HandlerMeta = ReturnType<typeof getMeta>;
-function getMeta({ controller: { target }, propertyKey, init, type }: Handler) {
-    return {
-        instance: construct(target),
-        propertyKey,
-        paramtypes: getParamTypes(target.prototype, propertyKey),
-        init,
-        isGenerator: type === 'Generator',
-    };
-}
-
 type StreamLike = IterableIterator<string | ArrayBuffer | ArrayBufferView<ArrayBufferLike>> | AsyncIterableIterator<string | ArrayBuffer | ArrayBufferView<ArrayBufferLike>>;
-async function onHandle(ctx: Context, { instance, propertyKey, paramtypes, isGenerator, init }: HandlerMeta) {
+async function onHandle(ctx: Context, { instance, propertyKey, paramtypes, isGenerator, init }: Meta) {
     const res = await instance[propertyKey](...await mapParams(ctx, paramtypes));
     if (isGenerator) {
         const { value, done } = await (res as StreamLike).next();
@@ -137,83 +126,61 @@ async function onHandle(ctx: Context, { instance, propertyKey, paramtypes, isGen
     return true;
 }
 
-function compileHandler(handler: Handler) {
-    const beforeHandle = handler.controller.hooks.get('beforeHandle')?.map(getMeta);
-    const afterHandle = handler.controller.hooks.get('afterHandle')?.map(getMeta);
-    const mapResponse = handler.controller.hooks.get('mapResponse')?.map(getMeta);
-    const handlerMeta = getMeta(handler);
-    return async (ctx: Context, server: Server) => {
-        let fulfilled = false;
-        ctx._server = server;
-        ctx._set = {
-            headers: {},
-            status: undefined,
-            statusText: undefined
-        };
-        try {
-            if (beforeHandle) for (const meta of beforeHandle) {
+function routes(target: Function) {
+    return getController(target).map((handler) => {
+        if (handler.type === 'Static')
+            return StaticResource(handler);
+        const meta = Meta(handler);
+        const beforeHandle = handler.controller.hooks('beforeHandle', handler).map(Meta).toArray();
+        const afterHandle = handler.controller.hooks('afterHandle', handler).map(Meta).toArray();
+        const mapResponse = handler.controller.hooks('mapResponse', handler).map(Meta).toArray();
+        return async (ctx: Context, server: Server) => {
+            let fulfilled = false;
+            ctx._server = server;
+            ctx._set = {
+                headers: {},
+                status: undefined,
+                statusText: undefined
+            };
+            try {
+                for (const meta of beforeHandle) {
+                    if (await onHandle(ctx, meta)) {
+                        ctx._response = newResponse(ctx._rawResponse, ctx._set);
+                        ctx._rawResponse = undefined;
+                        fulfilled = true;
+                        return ctx._response;
+                    }
+                }
                 if (await onHandle(ctx, meta)) {
+                    for (const meta of mapResponse)
+                        await onHandle(ctx, meta);
                     ctx._response = newResponse(ctx._rawResponse, ctx._set);
                     ctx._rawResponse = undefined;
                     fulfilled = true;
                     return ctx._response;
                 }
-            }
-            if (await onHandle(ctx, handlerMeta)) {
-                if (mapResponse) for (const handlerMeta of mapResponse)
-                    await onHandle(ctx, handlerMeta);
-                ctx._response = newResponse(ctx._rawResponse, ctx._set);
+                ctx._set.status = 404;
+                ctx._response = newResponse(null, ctx._set);
                 ctx._rawResponse = undefined;
                 fulfilled = true;
                 return ctx._response;
-            }
-            ctx._set.status = 404;
-            ctx._response = newResponse(null, ctx._set);
-            ctx._rawResponse = undefined;
-            fulfilled = true;
-            return ctx._response;
-        } finally {
-            if (fulfilled && afterHandle) {
-                ctx._set = { headers: {} }, fulfilled = false;
-                for (const meta of afterHandle) {
-                    if (!await onHandle(ctx, meta))
-                        continue;
-                    ctx._response = newResponse(ctx._rawResponse, ctx._set);
-                    ctx._rawResponse = undefined;
-                    fulfilled = true;
-                    if (fulfilled)
+            } finally {
+                if (fulfilled) {
+                    ctx._set = { headers: {} }, fulfilled = false;
+                    for (const meta of afterHandle) {
+                        if (!await onHandle(ctx, meta))
+                            continue;
+                        ctx._response = newResponse(ctx._rawResponse, ctx._set);
+                        ctx._rawResponse = undefined;
                         ctx._set = { headers: {} };
+                        fulfilled = true;
+                    }
+                    if (fulfilled)
+                        return ctx._response!;
                 }
-                if (fulfilled)
-                    return ctx._response!;
             }
-        }
-    };
-}
-
-function getStaticResource({ propertyKey, controller: { target }, init }: Static) {
-    const value = construct(target)[propertyKey];
-    if (Object.prototype.toString.call(value) === '[object HTMLBundle]')
-        return value as HTMLBundle;
-    return newResponse(construct(target)[propertyKey], init);
-}
-
-function routes(target: Function): Record<`/${string}`, (HTMLBundle & Response) | Response | RouterTypes.RouteHandler<string> | RouterTypes.RouteHandlerObject<string>> {
-    const controller = getController(target);
-    const routes = Object.fromEntries(controller.handlers().map(([path, handlers]) => {
-        if (handlers instanceof Map) {
-            return [path, Object.fromEntries(handlers.entries().map(([method, handler]) => {
-                if (handler.type === 'Static')
-                    return [method, getStaticResource(handler)];
-                return [method, compileHandler(handler)];
-            }))];
-        } else {
-            if (handlers.type === 'Static')
-                return [path, getStaticResource(handlers)];
-            return [path, compileHandler(handlers)];
-        }
-    }));
-    return routes as any;
+        };
+    }) as Record<`/${string}`, (HTMLBundle & Response) | Response | RouterTypes.RouteHandler<string> | RouterTypes.RouteHandlerObject<string>>;
 }
 
 export { routes };

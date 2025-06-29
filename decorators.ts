@@ -1,6 +1,6 @@
-import { getController, type HTTPMethod, type RequestLifecycleHook } from './controller';
+import { getController, type HTTPMethod, type Init, type RequestLifecycleHook } from './controller';
 import type { TSchema } from '@sinclair/typebox';
-import { registerInjectable, register, setParamType } from './service';
+import { registerInjectable, register, setParamType, getType, inject } from './service';
 import type { TParseOperation } from '@sinclair/typebox/value';
 import { type HeadersInit } from 'bun';
 import { Decorators } from './util';
@@ -15,10 +15,10 @@ function functionType(value: any) {
     return 'Function';
 }
 
-function Controller(opt?: { prefix?: string; }) {
+function Controller(opt?: { prefix?: string, init?: Init; }) {
     return Decorators({
         class(target) {
-            getController(target).init({ ...opt, prefix: '/' });
+            getController(target).init({ ...opt });
             registerInjectable(target, 'SINGLETON');
         },
     });
@@ -34,8 +34,11 @@ function Injectable(opt?: { scope?: 'SINGLETON' | 'REQUEST' | 'INSTANCE'; }) {
 
 function Inject() {
     return Decorators({
-        property({ constructor }, propertyKey) {
-            getController(constructor).inject(propertyKey);
+        property(target, propertyKey) {
+            const type = getType(target, propertyKey);
+            if (typeof type !== 'function')
+                throw new TypeError();
+            inject(target, propertyKey, type);
         },
     });
 }
@@ -48,30 +51,7 @@ function Use(controller: Function) {
     });
 }
 
-function Mount(path?: string, init?: {
-    headers?: HeadersInit;
-    status?: number;
-    statusText?: string;
-}) {
-    return Decorators(['method', 'property'], ({ constructor }, propertyKey, descriptor?: { value?: unknown; }) => {
-        if (!path) {
-            if (typeof propertyKey !== 'string')
-                throw new TypeError();
-            path = propertyKey;
-        }
-        getController(constructor).mount(path, {
-            propertyKey,
-            init,
-            type: descriptor?.value ? functionType(descriptor.value) : 'Static',
-        });
-    });
-}
-
-function Hook(hook: RequestLifecycleHook, init?: {
-    headers?: HeadersInit;
-    status?: number;
-    statusText?: string;
-}) {
+function Hook(hook: RequestLifecycleHook, init?: Init) {
     return Decorators({
         method({ constructor }, propertyKey, { value }) {
             getController(constructor).hook({ propertyKey, hook, init, type: functionType(value) });
@@ -79,16 +59,18 @@ function Hook(hook: RequestLifecycleHook, init?: {
     });
 }
 
-function Route(method: HTTPMethod, path: string, init?: {
-    headers?: HeadersInit;
-    status?: number;
-    statusText?: string;
-}) {
+function Route(path?: `/${string}`, init?: Init): Decorators<'method' | 'property'>;
+function Route(init: Init): Decorators<'method' | 'property'>;
+function Route(method: HTTPMethod, path?: string, init?: Init): Decorators<'method' | 'property'>;
+function Route(method: HTTPMethod, init: Init): Decorators<'method' | 'property'>;
+function Route(method?: HTTPMethod | `/${string}` | Init, path?: string | Init, init?: Init) {
     return Decorators(['method', 'property'], ({ constructor }, propertyKey, descriptor?: { value?: unknown; }) => {
-        if (!path) {
+        if (typeof method !== 'string' || (/\//.test as (v: string) => v is `/${string}`)(method))
+            init = path as any, path = method, method = undefined;
+        if (typeof path !== 'string') {
             if (typeof propertyKey !== 'string')
                 throw new TypeError();
-            path = propertyKey;
+            init = path, path = propertyKey;
         }
         getController(constructor).route(path, {
             propertyKey,
@@ -99,24 +81,16 @@ function Route(method: HTTPMethod, path: string, init?: {
     });
 }
 
+type ParamsOptions = {
+    operations?: TParseOperation | TParseOperation[];
+    schema?: TSchema | boolean;
+};
+
 type Params<T extends Record<string, string>> = T;
-function Params(options?: {
-    operations?: TParseOperation | TParseOperation[];
-    schema?: TSchema | boolean;
-}): Decorators<'parameter' | 'parameter_constructor'>;
-function Params(key: string, options?: {
-    operations?: TParseOperation | TParseOperation[];
-    schema?: TSchema | boolean;
-}): Decorators<'parameter' | 'parameter_constructor'>;
-function Params(...args: [key?: string, options?: {
-    operations?: TParseOperation | TParseOperation[];
-    schema?: TSchema | boolean;
-}] | [options?: {
-    operations?: TParseOperation | TParseOperation[];
-    schema?: TSchema | boolean;
-}]) {
+function Params(options?: ParamsOptions): Decorators<'parameter' | 'parameter_constructor'>;
+function Params(key: string, options?: ParamsOptions): Decorators<'parameter' | 'parameter_constructor'>;
+function Params(key?: string | ParamsOptions, options?: ParamsOptions) {
     return Decorators(['parameter', 'parameter_constructor'], (target, propertyKey, parameterIndex) => {
-        let [key, options] = args;
         if (typeof key !== 'string')
             options = key, key = undefined;
         setParamType(target, propertyKey, parameterIndex, {
@@ -129,23 +103,10 @@ function Params(...args: [key?: string, options?: {
 register('params', Params);
 
 type Body<T = unknown> = T;
-function Body(options?: {
-    operations?: TParseOperation | TParseOperation[];
-    schema?: TSchema | boolean;
-}): Decorators<'parameter' | 'parameter_constructor'>;
-function Body(key: string, options?: {
-    operations?: TParseOperation | TParseOperation[];
-    schema?: TSchema | boolean;
-}): Decorators<'parameter' | 'parameter_constructor'>;
-function Body(...args: [key?: string, options?: {
-    operations?: TParseOperation | TParseOperation[];
-    schema?: TSchema | boolean;
-}] | [options?: {
-    operations?: TParseOperation | TParseOperation[];
-    schema?: TSchema | boolean;
-}]) {
+function Body(options?: ParamsOptions): Decorators<'parameter' | 'parameter_constructor'>;
+function Body(key: string, options?: ParamsOptions): Decorators<'parameter' | 'parameter_constructor'>;
+function Body(key?: string | ParamsOptions, options?: ParamsOptions) {
     return Decorators(['parameter', 'parameter_constructor'], (target, propertyKey, parameterIndex) => {
-        let [key, options] = args;
         if (typeof key !== 'string')
             options = key, key = undefined;
         setParamType(target, propertyKey, parameterIndex, {
@@ -158,23 +119,10 @@ function Body(...args: [key?: string, options?: {
 register('body', Body);
 
 type Query<T extends Record<string, string | string[]> = Record<string, string | string[]>> = T;
-function Query(options?: {
-    operations?: TParseOperation | TParseOperation[];
-    schema?: TSchema | boolean;
-}): Decorators<'parameter' | 'parameter_constructor'>;
-function Query(key: string, options?: {
-    operations?: TParseOperation | TParseOperation[];
-    schema?: TSchema | boolean;
-}): Decorators<'parameter' | 'parameter_constructor'>;
-function Query(...args: [key?: string, options?: {
-    operations?: TParseOperation | TParseOperation[];
-    schema?: TSchema | boolean;
-}] | [options?: {
-    operations?: TParseOperation | TParseOperation[];
-    schema?: TSchema | boolean;
-}]) {
+function Query(options?: ParamsOptions): Decorators<'parameter' | 'parameter_constructor'>;
+function Query(key: string, options?: ParamsOptions): Decorators<'parameter' | 'parameter_constructor'>;
+function Query(key?: string | ParamsOptions, options?: ParamsOptions) {
     return Decorators(['parameter', 'parameter_constructor'], (target, propertyKey, parameterIndex) => {
-        let [key, options] = args;
         if (typeof key !== 'string')
             options = key, key = undefined;
         setParamType(target, propertyKey, parameterIndex, {
@@ -222,7 +170,6 @@ export {
     Injectable,
     Inject,
     Use,
-    Mount,
     Hook,
     Route,
     Params,
