@@ -61,8 +61,20 @@ function Decorators(options: DecoratorsOptions | (keyof DecoratorsOptions)[], fn
     };
 }
 
+function assignHeaders(headers: Headers, init?: Record<string, string | string[]>) {
+    for (const name in init) {
+        const value = init[name]!;
+        if (Array.isArray(value))
+            for (const e of value)
+                headers.append(name, e);
+        else
+            headers.set(name, value);
+    }
+    return headers;
+}
+
 function newResponse(data: unknown, init?: {
-    headers?: Record<string, string>;
+    headers?: Record<string, string | string[]>;
     status?: number;
     statusText?: string;
 }) {
@@ -71,11 +83,8 @@ function newResponse(data: unknown, init?: {
             return new Response(data, init);
         case 'object': {
             if (data instanceof Response) {
-                const newHeaders = new Headers(data.headers);
-                for (const name in init?.headers)
-                    newHeaders.set(name, init.headers[name]!);
                 return new Response(data.body, {
-                    headers: newHeaders,
+                    headers: assignHeaders(new Headers(data.headers), init?.headers),
                     status: init?.status ?? data.status,
                     statusText: init?.statusText ?? data.statusText,
                 });

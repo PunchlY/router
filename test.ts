@@ -1,13 +1,14 @@
-import { Route, RequestUrl, Params, Query, Store, Hook, Server, Injectable, Use, Controller, RawResponse, Inject } from './decorators';
+import { Route, RequestUrl, Params, Query, Store, Hook, Server, Injectable, Use, Controller, RawResponse, Inject, Body } from './decorators';
 import { routes } from './compose';
 
 @Injectable({ scope: 'REQUEST' })
 class User {
+    static uid = 0;
     constructor(
         @Params('id', { operations: [] }) public id: string,
         @Query('name', { operations: [] }) public name: string,
     ) {
-        console.log('user %s %s', id, name);
+        console.log('connect %s', User.uid++);
     }
 }
 
@@ -45,7 +46,7 @@ class Logger {
     }
 
     @Hook('afterHandle')
-    log({ method }: Request, { pathname }: RequestUrl, { body, ok, status }: Response, { loggerTimeStart }: Store<{ loggerTimeStart: number; }>) {
+    log({ method }: Request, { pathname }: RequestUrl, { ok, status }: Response, { loggerTimeStart }: Store<{ loggerTimeStart: number; }>) {
         console[ok ? 'debug' : 'error']('%s %d %s %fms', method, status, pathname, (Bun.nanoseconds() - loggerTimeStart) / 1000000);
     }
 }
@@ -88,8 +89,8 @@ class Main {
     }
 
     @Route('POST')
-    json(require: Request) {
-        return require.json();
+    json(body: Body) {
+        return body;
     }
 
     @Route('GET', '/stream')

@@ -1,6 +1,6 @@
 import type { Server, RouterTypes, HTMLBundle, BunRequest } from 'bun';
-import { type Handler, Meta, getController, StaticResource } from './controller';
-import { construct, getParamTypes, type ParamType } from './service';
+import { type Meta, StaticResource, Controller } from './controller';
+import { construct, getParamTypes, getScope, type ParamType } from './service';
 import { newResponse, parseBody, parseQuery } from './util';
 import { TypeGuard } from '@sinclair/typebox';
 import { Parse } from '@sinclair/typebox/value';
@@ -8,7 +8,7 @@ import { Parse } from '@sinclair/typebox/value';
 interface Context extends BunRequest {
     _server: Server;
     _set: {
-        readonly headers: Record<string, string>;
+        readonly headers: Record<string, string | string[]>;
         status?: number;
         statusText?: string;
     };
@@ -21,25 +21,28 @@ interface Context extends BunRequest {
     _instances?: WeakMap<Function, any>;
 }
 
-async function mapParams(ctx: Context, paramtypes: ParamType[]) {
-    const params: any[] = [];
+function* mapParams(ctx: Context, paramtypes: ParamType[]): Generator<unknown> {
     for (const type of paramtypes) {
-        if (typeof type.identifier === 'function') {
-            if (type.scope === 'SINGLETON') {
-                params.push(construct(type.identifier));
-                continue;
+        if (typeof type === 'function') {
+            switch (getScope(type)) {
+                case 'SINGLETON': {
+                    yield construct(type);
+                } return;
+                case 'REQUEST': if (ctx._instances?.has(type)) {
+                    yield ctx._instances.get(type);
+                } else {
+                    const value = new type(...mapParams(ctx, getParamTypes(type)));
+                    (ctx._instances ??= new WeakMap()).set(type, value);
+                    yield value;
+                } return;
+                case 'INSTANCE': {
+                    yield new type(...mapParams(ctx, getParamTypes(type)));
+                } return;
+                default:
+                    throw new TypeError();
             }
-            if (type.scope === 'REQUEST' && ctx._instances?.has(type.identifier)) {
-                params.push(ctx._instances.get(type.identifier));
-                continue;
-            }
-            const instance = Reflect.construct(type.identifier, await mapParams(ctx, getParamTypes(type.identifier)));
-            if (type.scope === 'REQUEST')
-                (ctx._instances ??= new WeakMap()).set(type.identifier, instance);
-            params.push(instance);
-            continue;
         }
-        let value: any;
+        let value;
         switch (type.identifier) {
             case 'url': {
                 value = ctx._url ??= new URL(ctx.url);
@@ -72,9 +75,7 @@ async function mapParams(ctx: Context, paramtypes: ParamType[]) {
                 value = ctx.cookies;
             } break;
             case 'body': {
-                if (typeof ctx._body === 'undefined')
-                    ctx._body = await parseBody(ctx);
-                value = ctx._body;
+                value = ctx._body as any;
             } break;
             default:
                 throw new TypeError();
@@ -86,14 +87,13 @@ async function mapParams(ctx: Context, paramtypes: ParamType[]) {
                 Parse(type.operations, type.schema, value) :
                 Parse(type.schema, value);
         }
-        params.push(value);
+        yield value;
     }
-    return params;
 }
 
 type StreamLike = IterableIterator<string | ArrayBuffer | ArrayBufferView<ArrayBufferLike>> | AsyncIterableIterator<string | ArrayBuffer | ArrayBufferView<ArrayBufferLike>>;
 async function onHandle(ctx: Context, { instance, propertyKey, paramtypes, isGenerator, init }: Meta) {
-    const res = await instance[propertyKey](...await mapParams(ctx, paramtypes));
+    const res = await instance[propertyKey](...mapParams(ctx, paramtypes));
     if (isGenerator) {
         const { value, done } = await (res as StreamLike).next();
         ctx._rawResponse = done ? value : new ReadableStream({
@@ -127,13 +127,16 @@ async function onHandle(ctx: Context, { instance, propertyKey, paramtypes, isGen
 }
 
 function routes(target: Function) {
-    return getController(target).map((handler) => {
+    return Controller.from(target).map((handler) => {
         if (handler.type === 'Static')
             return StaticResource(handler);
-        const meta = Meta(handler);
-        const beforeHandle = handler.controller.hooks('beforeHandle', handler).map(Meta).toArray();
-        const afterHandle = handler.controller.hooks('afterHandle', handler).map(Meta).toArray();
-        const mapResponse = handler.controller.hooks('mapResponse', handler).map(Meta).toArray();
+        const {
+            bodyPresence,
+            beforeHandle,
+            handle,
+            afterHandle,
+            mapResponse,
+        } = Controller.getMeta(handler);
         return async (ctx: Context, server: Server) => {
             let fulfilled = false;
             ctx._server = server;
@@ -142,6 +145,8 @@ function routes(target: Function) {
                 status: undefined,
                 statusText: undefined
             };
+            if (bodyPresence)
+                ctx._body = await parseBody(ctx);
             try {
                 for (const meta of beforeHandle) {
                     if (await onHandle(ctx, meta)) {
@@ -151,7 +156,7 @@ function routes(target: Function) {
                         return ctx._response;
                     }
                 }
-                if (await onHandle(ctx, meta)) {
+                if (await onHandle(ctx, handle)) {
                     for (const meta of mapResponse)
                         await onHandle(ctx, meta);
                     ctx._response = newResponse(ctx._rawResponse, ctx._set);

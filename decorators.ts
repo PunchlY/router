@@ -1,8 +1,7 @@
-import { getController, type HTTPMethod, type Init, type RequestLifecycleHook } from './controller';
+import { Controller as $Controller, type HTTPMethod, type Init, type RequestLifecycleHook } from './controller';
 import type { TSchema } from '@sinclair/typebox';
 import { registerInjectable, register, setParamType, getType, inject } from './service';
 import type { TParseOperation } from '@sinclair/typebox/value';
-import { type HeadersInit } from 'bun';
 import { Decorators } from './util';
 
 const AsyncGeneratorFunction = async function* () { }.constructor as AsyncGeneratorFunctionConstructor;
@@ -18,7 +17,7 @@ function functionType(value: any) {
 function Controller(opt?: { prefix?: string, init?: Init; }) {
     return Decorators({
         class(target) {
-            getController(target).init({ ...opt });
+            $Controller.from(target).init({ ...opt });
             registerInjectable(target, 'SINGLETON');
         },
     });
@@ -46,7 +45,7 @@ function Inject() {
 function Use(controller: Function) {
     return Decorators({
         class(target) {
-            getController(target).use(getController(controller));
+            $Controller.from(target).use($Controller.from(controller));
         },
     });
 }
@@ -54,7 +53,7 @@ function Use(controller: Function) {
 function Hook(hook: RequestLifecycleHook, init?: Init) {
     return Decorators({
         method({ constructor }, propertyKey, { value }) {
-            getController(constructor).hook({ propertyKey, hook, init, type: functionType(value) });
+            $Controller.from(constructor).hook({ propertyKey, hook, init, type: functionType(value) });
         },
     });
 }
@@ -72,7 +71,7 @@ function Route(method?: HTTPMethod | `/${string}` | Init, path?: string | Init, 
                 throw new TypeError();
             init = path, path = propertyKey;
         }
-        getController(constructor).route(path, {
+        $Controller.from(constructor).route(path, {
             propertyKey,
             method,
             init,

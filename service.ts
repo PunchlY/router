@@ -28,12 +28,11 @@ function register(identifier: string, value?: WeakKey) {
 }
 
 type ParamType = {
-    identifier?: string | Function;
+    identifier?: string;
     schema?: TSchema;
     key?: string;
     operations?: TParseOperation[];
-    scope?: 'SINGLETON' | 'REQUEST' | 'INSTANCE';
-};
+} | (new (...args: any[]) => any);
 function ParamType(type: any): ParamType {
     if (registry.has(type))
         return { identifier: registry.get(type)! };
@@ -43,7 +42,7 @@ function ParamType(type: any): ParamType {
         if (BasicTypes.has(type))
             return { schema: BasicTypes.get(type) };
         if (injectableFunctionMap.has(type))
-            return { identifier: type, scope: injectableFunctionMap.get(type)! };
+            return type as new (...args: any[]) => any;
         return {};
     }
     if (TypeGuard.IsSchema(type))
@@ -85,6 +84,8 @@ function setParamType(target: object, propertyKey: string | symbol | undefined, 
         throw new Error('Index is out of bounds for parameter types');
 
     const paramType = paramTypes[index];
+    if (typeof paramType === 'function')
+        throw new TypeError();
     if (typeof paramType.identifier === 'function')
         throw new TypeError();
 
@@ -100,12 +101,12 @@ function setParamType(target: object, propertyKey: string | symbol | undefined, 
     if (typeof schema === 'undefined')
         schema = paramType.schema;
     else if (typeof schema === 'boolean')
-        schema = schema ? paramTypes[index].schema : undefined;
+        schema = schema ? paramType.schema : undefined;
     else if (!TypeGuard.IsSchema(schema))
         throw new TypeError();
 
     if (typeof operations === 'undefined')
-        operations = paramTypes[index].operations;
+        operations = paramType.operations;
     else if (typeof operations === 'string')
         operations = [operations];
     else if (!Array.isArray(operations))
@@ -122,6 +123,9 @@ function registerInjectable(constructor: Function, scope: 'SINGLETON' | 'REQUEST
     if (injectableFunctionMap.has(constructor))
         throw new Error(`Constructor ${constructor.name} is already registered as injectable`);
     injectableFunctionMap.set(constructor, scope);
+}
+function getScope(constructor: Function) {
+    return injectableFunctionMap.get(constructor);
 }
 
 const injectBucket = bucket(new WeakMap<object, Set<string | symbol>>(), () => new Set());
@@ -147,13 +151,13 @@ const construct = bucket(new WeakMap<Function, any>(), (constructor) => {
     if (injectableFunctionMap.get(constructor) !== 'SINGLETON')
         throw new TypeError();
     return Reflect.construct(constructor, getParamTypes(constructor).map((constructor): any => {
-        if (typeof constructor.identifier !== 'function')
+        if (typeof constructor !== 'function')
             throw new TypeError();
-        return construct(constructor.identifier);
+        return construct(constructor);
     }));
 });
 
 export { register };
 export { getType, getParamTypes, setParamType };
-export { construct, registerInjectable, inject };
+export { construct, registerInjectable, getScope, inject };
 export { ParamType };

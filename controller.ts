@@ -1,6 +1,6 @@
 import type { HeadersInit, HTMLBundle } from 'bun';
 import { instanceBucket } from './bucket';
-import { construct, getParamTypes, getType, inject } from './service';
+import { construct, getParamTypes, getType, inject, ParamType } from './service';
 import { newResponse } from './util';
 
 const RequestLifecycleHook = ['beforeHandle', 'afterHandle', 'mapResponse'] as const;
@@ -9,41 +9,52 @@ type RequestLifecycleHook = typeof RequestLifecycleHook[number];
 type HTTPMethod = import('bun').RouterTypes.HTTPMethod;
 
 interface Init {
-    headers?: HeadersInit;
+    headers?: Record<string, string | string[]>;
     status?: number;
     statusText?: string;
 };
-function Init({ controller: { opt }, init }: Route) {
-    if (!opt)
-        throw new Error('Cannot use a disabled controller');
-    return {
-        ...init,
-        ...opt.init,
-        headers: {
-            ...Object.fromEntries(new Headers(init?.headers)),
-            ...Object.fromEntries(new Headers(opt.init?.headers)),
-        },
-    };
+
+function checkBodyPresence(paramtypes: Iterable<ParamType>, checked = new Set<Function>()) {
+    for (const type of paramtypes) {
+        if (typeof type === 'function') {
+            if (checked.has(type))
+                continue;
+            checked.add(type);
+            if (checkBodyPresence(getParamTypes(type), checked))
+                return true;
+            continue;
+        }
+        if (type.identifier === 'body')
+            return true;
+    }
+    return false;
 }
 
 type Meta = ReturnType<typeof Meta>;
-function Meta(handler: Handler) {
-    let init = Init(handler);
-    if (handler.env) for (const _init of handler.env.map(Init)) {
-        init = {
-            ...init,
-            ..._init,
-            headers: { ...init.headers, ..._init.headers },
-        };
-    }
-    const { controller: { target }, propertyKey, type } = handler;
+function Meta({ controller: { target }, propertyKey, init, type }: Handler) {
     return {
         instance: construct(target),
         propertyKey,
         paramtypes: getParamTypes(target.prototype, propertyKey),
-        init,
+        init: {
+            ...init,
+            headers: Object.fromEntries(new Headers(init?.headers)),
+        },
         isGenerator: type === 'Generator',
     };
+}
+
+function assignHeaders(headers: Record<string, string | string[]>, init?: Record<string, string | string[]>) {
+    for (const name in init) {
+        const value = init[name]!;
+        if (Array.isArray(value))
+            headers[name] = Array.isArray(headers[name])
+                ? [...headers[name], ...value]
+                : [headers[name]!, ...value];
+        else
+            headers[name] = value;
+    }
+    return headers;
 }
 
 type StaticResource = HTMLBundle | Response;
@@ -60,7 +71,7 @@ function StaticResource({ propertyKey, controller: { target }, init }: Static) {
 interface Route {
     index: number;
     controller: Controller;
-    propertyKey: string | symbol;
+    propertyKey?: string | symbol;
     init?: {
         headers?: HeadersInit;
         status?: number;
@@ -70,79 +81,121 @@ interface Route {
 }
 interface Handler extends Route {
     type: 'Generator' | 'Function';
+    propertyKey: string | symbol;
 }
 interface Static extends Route {
     type: 'Static';
+    propertyKey: string | symbol;
 }
 
 class Controller {
+
+    static #list = new WeakMap<Function, Controller>();
+    static from = instanceBucket(this.#list, Controller);
+    static isController(controller: Function) {
+        if (typeof controller === 'function' && this.#list.has(controller)) {
+            if (this.#list.get(controller)!.#enable)
+                return true;
+        }
+        return false;
+    }
+
     constructor(public readonly target: Function) {
         if (typeof target !== 'function')
             throw new TypeError();
     }
 
-    opt?: {
-        prefix?: string;
-        init?: Init;
-    };
-    init(opt: {
+    #enable = false;
+    #prefix?: string;
+    #init: {
+        headers: Record<string, string | string[]>;
+        status?: number;
+        statusText?: string;
+    } = { headers: {} };
+    init({ prefix, init }: {
         prefix?: string;
         init?: Init;
     }) {
-        if (this.opt)
+        if (this.#enable)
             throw new Error('Controller has been initialized');
-        this.opt = opt;
+        this.#enable = true;
+        this.#prefix = prefix;
+        this.#init = {
+            ...this.#init,
+            ...init,
+            headers: assignHeaders(this.#init.headers, init?.headers),
+        };
     }
 
     #use: Controller[] = [];
 
     #handlerIndex = 0;
-    readonly #hooks: Map<RequestLifecycleHook, Handler[]> = new Map();
-    readonly #routes: Map<string, Map<HTTPMethod, Handler | Static> | Handler | Static> = new Map();
+    readonly #hookList: Map<RequestLifecycleHook, Handler[]> = new Map();
 
-    *hooks(name: RequestLifecycleHook, { index, env }: Route): Generator<Handler> {
+    static *#hooks({ controller, index, env }: Route, name: RequestLifecycleHook): Generator<Handler> {
         switch (name) {
             case 'beforeHandle': {
                 if (env) for (const handler of env.toReversed()) {
-                    yield* handler.controller.hooks(name, handler);
+                    yield* this.#hooks(handler, name);
                 }
-                for (const controller of this.#use) {
-                    if (controller.#hooks.has(name))
-                        yield* controller.#hooks.get(name)!;
+                for (const hookController of controller.#use) {
+                    if (hookController.#hookList.has(name))
+                        yield* hookController.#hookList.get(name)!;
                 }
-                if (this.#hooks.has(name)) for (const handler of this.#hooks.get(name)!) {
+                if (controller.#hookList.has(name)) for (const handler of controller.#hookList.get(name)!) {
                     if (handler.index < index)
                         yield handler;
                 }
             } break;
             case 'afterHandle':
             case 'mapResponse': {
-                if (this.#hooks.has(name)) for (const handler of this.#hooks.get(name)!) {
+                if (controller.#hookList.has(name)) for (const handler of controller.#hookList.get(name)!) {
                     if (handler.index > index)
                         yield handler;
                 }
-                for (const controller of this.#use) {
-                    if (controller.#hooks.has(name))
-                        yield* controller.#hooks.get(name)!;
+                for (const hookController of controller.#use) {
+                    if (hookController.#hookList.has(name))
+                        yield* hookController.#hookList.get(name)!;
                 }
                 if (env) for (const handler of env) {
-                    yield* handler.controller.hooks(name, handler);
+                    yield* this.#hooks(handler, name);
                 }
             } break;
         }
     }
+    static getMeta(handler: Handler) {
+        const handle = Meta(handler);
+        const beforeHandle = this.#hooks(handler, 'beforeHandle').map(Meta).toArray();
+        const afterHandle = this.#hooks(handler, 'afterHandle').map(Meta).toArray();
+        const mapResponse = this.#hooks(handler, 'mapResponse').map(Meta).toArray();
+        const bodyPresence = checkBodyPresence(new Set([
+            handle,
+            ...beforeHandle,
+            ...afterHandle,
+            ...mapResponse,
+        ].flatMap(({ paramtypes }) => paramtypes)));
+        return {
+            bodyPresence,
+            beforeHandle,
+            handle,
+            afterHandle,
+            mapResponse,
+        };
+    }
 
-    *handlers() {
-        if (!this.opt)
+    readonly #routes: Map<string, Map<HTTPMethod, Handler | Static> | Handler | Static> = new Map();
+
+    *#handlers() {
+        if (!this.#enable)
             throw new Error('Cannot use a disabled controller');
-        const prefix = String(this.opt.prefix ?? '/').replaceAll(/^(?!\/)|(?<!\/)$/g, '/').replaceAll('$', '$$$$') as '/' | `/${string}/`;
+        const prefix = String(this.#prefix ?? '/').replaceAll(/^(?!\/)|(?<!\/)$/g, '/').replaceAll('$', '$$$$') as '/' | `/${string}/`;
         for (const [path, handlers] of this.#routes) {
             yield [path.replace(/^\/?/, prefix) as `/${string}`, handlers] as const;
         }
     }
 
     map<T>(cb: (handler: Handler | Static) => T): Record<`/${string}`, T | Record<HTTPMethod, T>> {
-        return Object.fromEntries(this.handlers().map(([path, handlers]) => {
+        return Object.fromEntries(this.#handlers().map(([path, handlers]) => {
             if (handlers instanceof Map) {
                 return [path, Object.fromEntries(handlers.entries().map(([method, handler]) => [method, cb(handler)]))];
             } else {
@@ -164,23 +217,34 @@ class Controller {
     }
 
     use(router: Controller) {
-        if (!router.opt)
+        if (!router.#enable)
             throw new Error('Cannot use a disabled controller');
+        this.#init = {
+            ...this.#init,
+            ...router.#init,
+            headers: assignHeaders(this.#init.headers, router.#init?.headers),
+        };
+        for (const controller of this.#use)
+            controller.#init = {
+                ...controller.#init,
+                ...router.#init,
+                headers: assignHeaders(controller.#init.headers, router.#init?.headers),
+            };
         this.#use.push(router);
         this.#handlerIndex = NaN;
-        this.mount('/', { propertyKey: 'constructor', router });
+        this.mount('/', { propertyKey: undefined, router });
     }
 
     mount(path: string, { propertyKey, router, init }: {
-        propertyKey: string | symbol;
+        propertyKey?: string | symbol;
         router: Controller;
         init?: Init;
     }) {
         path = path.replace(/^\/?/, '/');
-        if (!router.opt)
+        if (!router.#enable)
             throw new Error('Cannot mount a disabled controller');
         const prefix = path.replace(/^(?!\/)|(?<!\/)$/g, '/').replaceAll('$', '$$$$');
-        for (let [path, handler] of router.handlers()) {
+        for (let [path, handler] of router.#handlers()) {
             path = path.replace(/^\/?/, prefix) as `/${string}`;
             if (handler instanceof Map) {
                 const route = this.#methodRoute(path);
@@ -231,8 +295,8 @@ class Controller {
                 throw new Error('Route already exists for this path');
             if (type === 'Static') {
                 const type = getType(this.target.prototype, propertyKey);
-                if (isController(type)) {
-                    this.mount(path, { propertyKey, router: getController(type), init });
+                if (Controller.isController(type)) {
+                    this.mount(path, { propertyKey, router: Controller.from(type), init });
                     inject(this.target.prototype, propertyKey, type);
                     return;
                 }
@@ -265,9 +329,9 @@ class Controller {
     }) {
         if (!RequestLifecycleHook.includes(name))
             throw new Error(`Invalid hook: ${name}`);
-        let hooks = this.#hooks.get(name);
+        let hooks = this.#hookList.get(name);
         if (!hooks)
-            this.#hooks.set(name, hooks = []);
+            this.#hookList.set(name, hooks = []);
         hooks.push({
             index: this.#handlerIndex++,
             controller: this,
@@ -278,12 +342,6 @@ class Controller {
     }
 }
 
-const controllerList = new WeakMap<Function, Controller>();
-const getController = instanceBucket(controllerList, Controller);
-function isController(controller: Function) {
-    return typeof controller === 'function' && controllerList.has(controller);
-}
-
-export type { Route, Handler, Static, Controller };
-export { getController, Init, Meta, StaticResource };
+export type { Init, Handler, Static, Meta };
+export { Controller, StaticResource };
 export type { HTTPMethod, RequestLifecycleHook };
