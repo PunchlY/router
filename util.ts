@@ -1,5 +1,5 @@
 
-function decoratorTypeOf(args: IArguments): keyof DecoratorsOptions {
+function decoratorTypeOf(args: IArguments) {
     const [target, propertyKey, descriptor] = args as { [Symbol.iterator](): ArrayIterator<unknown>; };
     if ((typeof target !== 'object' || target === null) && typeof target !== 'function')
         throw new TypeError();
@@ -23,37 +23,38 @@ function decoratorTypeOf(args: IArguments): keyof DecoratorsOptions {
     return 'class';
 }
 
-interface DecoratorsOptions {
+interface DecoratorsOptions<PropertyKey extends string | symbol, Value> {
     class?(target: Function): void;
 
-    property?(target: Object, propertyKey: string | symbol): void;
-    property_static?(target: Function, propertyKey: string | symbol): void;
+    property?(target: Object, propertyKey: PropertyKey): void;
+    property_static?(target: Function, propertyKey: PropertyKey): void;
 
-    accessor?(target: Object, propertyKey: string | symbol, descriptor: { get?(): unknown, set?(value: unknown): void; }): void;
-    accessor_static?(target: Function, propertyKey: string | symbol, descriptor: { get?(): unknown, set?(value: unknown): void; }): void;
+    accessor?(target: Object, propertyKey: PropertyKey, descriptor: { get?(): Value, set?(value: Value): void; }): void;
+    accessor_static?(target: Function, propertyKey: PropertyKey, descriptor: { get?(): Value, set?(value: Value): void; }): void;
 
-    method?(target: Object, propertyKey: string | symbol, descriptor: { value?: unknown; }): void;
-    method_static?(target: Function, propertyKey: string | symbol, descriptor: { value?: unknown; }): void;
+    method?(target: Object, propertyKey: PropertyKey, descriptor: { value?: Value; }): void;
+    method_static?(target: Function, propertyKey: PropertyKey, descriptor: { value?: Value; }): void;
 
-    parameter?(target: Object, propertyKey: string | symbol, parameterIndex: number): void;
-    parameter_static?(target: Function, propertyKey: string | symbol, parameterIndex: number): void;
+    parameter?(target: Object, propertyKey: PropertyKey, parameterIndex: number): void;
+    parameter_static?(target: Function, propertyKey: PropertyKey, parameterIndex: number): void;
     parameter_constructor?(target: Function, propertyKey: undefined, parameterIndex: number): void;
 }
 
 type IntersectionFromUnion<T> = (T extends any ? (arg: T) => void : never) extends (arg: infer P) => void ? P : never;
 
-type Decorators<K extends keyof DecoratorsOptions> = IntersectionFromUnion<NonNullable<DecoratorsOptions[K]>>;
+type DecoratorType = keyof DecoratorsOptions<string | symbol, unknown>;
+type Decorators<K extends DecoratorType, PropertyKey extends string | symbol = symbol | string, Value = unknown> = IntersectionFromUnion<NonNullable<DecoratorsOptions<PropertyKey, Value>[K]>>;
 
-function Decorators<T extends DecoratorsOptions>(options: T): Decorators<keyof T & keyof DecoratorsOptions>;
-function Decorators<K extends keyof DecoratorsOptions>(type: K[], fn: Decorators<K>): typeof fn;
-function Decorators(options: DecoratorsOptions | (keyof DecoratorsOptions)[], fn?: Decorators<keyof DecoratorsOptions>) {
+function Decorators<Options extends DecoratorsOptions<PropertyKey, Value>, PropertyKey extends string | symbol, Value>(options: Options): Decorators<{ [K in keyof Options]: K extends DecoratorType ? K : never }[keyof Options], PropertyKey, Value>;
+function Decorators<Type extends DecoratorType, PropertyKey extends string | symbol, Value>(type: Type[], fn: Decorators<Type, PropertyKey, Value>): Decorators<Type, PropertyKey, Value>;
+function Decorators(options: DecoratorsOptions<string | symbol, unknown> | DecoratorType[], fn?: Decorators<DecoratorType>) {
     if (Array.isArray(options)) return function (target: Function & Object, propertyKey: never, descriptor: number & TypedPropertyDescriptor<unknown>) {
         const type = decoratorTypeOf(arguments);
         if (!options.includes(type))
             throw new Error('Decorator type not found');
         fn!(target, propertyKey, descriptor);
     };
-    return function (target: Function & Object, propertyKey: never, descriptor: number & Required<TypedPropertyDescriptor<unknown>>) {
+    return function call(target: Function & Object, propertyKey: never, descriptor: number & Required<TypedPropertyDescriptor<unknown>>) {
         const type = decoratorTypeOf(arguments);
         if (!Object.hasOwn(options, type))
             throw new Error('Decorator type not found');
@@ -61,7 +62,25 @@ function Decorators(options: DecoratorsOptions | (keyof DecoratorsOptions)[], fn
     };
 }
 
+interface MapLike<K, V> {
+    has(key: K): boolean;
+    set(key: K, value: V): void;
+    get(key: K): V | undefined;
+}
+
+function bucket<K, V>(map: MapLike<K, V>, cb: (key: NoInfer<K>) => NoInfer<V>) {
+    return function (key: K): V {
+        if (map.has(key))
+            return map.get(key)!;
+        const value = cb(key);
+        map.set(key, value);
+        return value;
+    };
+}
+
 function assignHeaders(headers: Headers, init?: Record<string, string | string[]>) {
+    if (!init)
+        return headers;
     for (const name in init) {
         const value = init[name]!;
         if (Array.isArray(value))
@@ -113,7 +132,7 @@ function parseQuery(search: URLSearchParams) {
 }
 
 async function parseBody(request: Request) {
-    switch (request.headers.get('content-type')?.split(';', 1)?.[0] ?? '') {
+    switch (request.headers.get('content-type')?.split(';', 1)?.[0]) {
         case 'application/x-www-form-urlencoded':
             return parseQuery(new URLSearchParams(await request.text()));
         case 'multipart/form-data': {
@@ -136,5 +155,6 @@ async function parseBody(request: Request) {
 };
 
 export { Decorators };
+export { bucket };
 export { newResponse };
 export { parseBody, parseQuery };

@@ -1,6 +1,6 @@
-import { Controller as $Controller, type HTTPMethod, type Init, type RequestLifecycleHook } from './controller';
+import { Controller as $Controller, type Init, type HookType } from './controller';
 import type { TSchema } from '@sinclair/typebox';
-import { registerInjectable, register, setParamType, getType, inject } from './service';
+import { registerInjectable, register, setParamType, inject } from './service';
 import type { TParseOperation } from '@sinclair/typebox/value';
 import { Decorators } from './util';
 
@@ -14,19 +14,18 @@ function functionType(value: any) {
     return 'Function';
 }
 
-function Controller(opt?: { prefix?: string, init?: Init; }) {
+function Controller(opt?: { prefix?: string, headers?: Init['headers']; }) {
     return Decorators({
         class(target) {
-            $Controller.from(target).init({ ...opt });
-            registerInjectable(target, 'SINGLETON');
+            $Controller.from(target).init({ ...opt, init: { headers: opt?.headers } });
         },
     });
 }
 
-function Injectable(opt?: { scope?: 'SINGLETON' | 'REQUEST' | 'INSTANCE'; }) {
+function Injectable(opt?: { scope?: 'SINGLETON' | 'REQUEST'; }) {
     return Decorators({
         class(target) {
-            registerInjectable(target, opt?.scope ?? 'SINGLETON');
+            registerInjectable(target, opt?.scope !== 'REQUEST');
         },
     });
 }
@@ -34,10 +33,7 @@ function Injectable(opt?: { scope?: 'SINGLETON' | 'REQUEST' | 'INSTANCE'; }) {
 function Inject() {
     return Decorators({
         property(target, propertyKey) {
-            const type = getType(target, propertyKey);
-            if (typeof type !== 'function')
-                throw new TypeError();
-            inject(target, propertyKey, type);
+            inject(target, propertyKey);
         },
     });
 }
@@ -45,25 +41,53 @@ function Inject() {
 function Use(controller: Function) {
     return Decorators({
         class(target) {
-            $Controller.from(target).use($Controller.from(controller));
+            $Controller.from(target).use({
+                router: controller,
+            });
         },
     });
 }
 
-function Hook(hook: RequestLifecycleHook, init?: Init) {
+function Hook(hook: HookType) {
     return Decorators({
-        method({ constructor }, propertyKey, { value }) {
-            $Controller.from(constructor).hook({ propertyKey, hook, init, type: functionType(value) });
+        method({ constructor }, propertyKey) {
+            $Controller.from(constructor).hook({ propertyKey, hook });
         },
     });
 }
 
-function Route(path?: `/${string}`, init?: Init): Decorators<'method' | 'property'>;
-function Route(init: Init): Decorators<'method' | 'property'>;
-function Route(method: HTTPMethod, path?: string, init?: Init): Decorators<'method' | 'property'>;
-function Route(method: HTTPMethod, init: Init): Decorators<'method' | 'property'>;
-function Route(method?: HTTPMethod | `/${string}` | Init, path?: string | Init, init?: Init) {
-    return Decorators(['method', 'property'], ({ constructor }, propertyKey, descriptor?: { value?: unknown; }) => {
+function Mount<Path extends string>(init?: {
+    headers?: Init['headers'];
+}): Decorators<'property', Path>;
+function Mount(path: string, init?: {
+    headers?: Init['headers'];
+}): Decorators<'property'>;
+function Mount(path?: string | Init, init?: Init) {
+    return Decorators(['property'], (target, propertyKey) => {
+        if (typeof path !== 'string') {
+            if (typeof propertyKey !== 'string')
+                throw new TypeError();
+            init = path, path = propertyKey;
+        }
+        $Controller.from(target.constructor).mount({
+            path,
+            propertyKey,
+            init: { headers: init?.headers },
+        });
+    });
+}
+
+function Route<Path extends string>(init?: Init): Decorators<'method' | 'property' | 'accessor', Path>;
+function Route(path: `/${string}`, init?: Init): Decorators<'method' | 'property' | 'accessor'>;
+function Route<Path extends string>(method: import('bun').RouterTypes.HTTPMethod, init?: Init): Decorators<'method' | 'property' | 'accessor', Path>;
+function Route(method: import('bun').RouterTypes.HTTPMethod, path: string, init?: Init): Decorators<'method' | 'property' | 'accessor'>;
+function Route<Path extends string>(method: Uppercase<string>, init?: Init): Decorators<'method' | 'property' | 'accessor', Path>;
+function Route(method: Uppercase<string>, path: string, init?: Init): Decorators<'method' | 'property' | 'accessor'>;
+function Route(method?: Uppercase<string> | `/${string}` | Init, path?: string | Init, init?: Init) {
+    return Decorators(['method', 'property', 'accessor'], ({ constructor }, propertyKey, descriptor?: {
+        get?: () => unknown;
+        value?: unknown;
+    }) => {
         if (typeof method !== 'string' || (/\//.test as (v: string) => v is `/${string}`)(method))
             init = path as any, path = method, method = undefined;
         if (typeof path !== 'string') {
@@ -71,11 +95,30 @@ function Route(method?: HTTPMethod | `/${string}` | Init, path?: string | Init, 
                 throw new TypeError();
             init = path, path = propertyKey;
         }
-        $Controller.from(constructor).route(path, {
+        $Controller.from(constructor).route({
+            path,
             propertyKey,
             method,
             init,
-            type: descriptor?.value ? functionType(descriptor.value) : 'Static',
+            type: descriptor && 'value' in descriptor ? functionType(descriptor.value) : 'Accessor',
+        });
+    });
+}
+
+function Static<Path extends string>(init?: Init): Decorators<'property', Path>;
+function Static(path: string, init?: Init): Decorators<'property'>;
+function Static(path?: string | Init, init?: Init) {
+    return Decorators(['property'], ({ constructor }, propertyKey) => {
+        if (typeof path !== 'string') {
+            if (typeof propertyKey !== 'string')
+                throw new TypeError();
+            init = path, path = propertyKey;
+        }
+        $Controller.from(constructor).route({
+            path,
+            propertyKey,
+            init,
+            type: 'Static',
         });
     });
 }
@@ -85,7 +128,6 @@ type ParamsOptions = {
     schema?: TSchema | boolean;
 };
 
-type Params<T extends Record<string, string>> = T;
 function Params(options?: ParamsOptions): Decorators<'parameter' | 'parameter_constructor'>;
 function Params(key: string, options?: ParamsOptions): Decorators<'parameter' | 'parameter_constructor'>;
 function Params(key?: string | ParamsOptions, options?: ParamsOptions) {
@@ -99,7 +141,6 @@ function Params(key?: string | ParamsOptions, options?: ParamsOptions) {
         });
     });
 }
-register('params', Params);
 
 type Body<T = unknown> = T;
 function Body(options?: ParamsOptions): Decorators<'parameter' | 'parameter_constructor'>;
@@ -139,7 +180,7 @@ const RequestUrl = register('url');
 type Server = import('bun').Server;
 const Server = register('server');
 
-type ResponseInit = { readonly headers: Record<string, string>, status?: number, statusText?: string; };
+type ResponseInit = { headers: Record<string, string>, status: number, statusText?: string; };
 const ResponseInit = register('responseInit');
 
 type Store<T extends Record<any, any>> = T;
@@ -157,8 +198,6 @@ register('store', Store);
 type RawResponse<T = unknown> = T;
 const RawResponse = register('rawResponse');
 
-register('response', Response);
-
 register('request', Request);
 
 type Cookie = Bun.CookieMap;
@@ -170,7 +209,9 @@ export {
     Inject,
     Use,
     Hook,
+    Mount,
     Route,
+    Static,
     Params,
     Body,
     Query,

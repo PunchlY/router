@@ -1,4 +1,4 @@
-import { Route, RequestUrl, Params, Query, Store, Hook, Server, Injectable, Use, Controller, RawResponse, Inject, Body } from './decorators';
+import { Route, RequestUrl, Params, Query, Store, Hook, Server, Injectable, Use, Controller, RawResponse, Inject, Body, Static, ResponseInit, Mount } from './decorators';
 import { routes } from './compose';
 
 @Injectable({ scope: 'REQUEST' })
@@ -40,21 +40,22 @@ class API {
 
 @Controller()
 class Logger {
-    @Hook('beforeHandle')
+    @Hook('request')
     initStore(store: Store<{ loggerTimeStart: number; }>) {
         store.loggerTimeStart = Bun.nanoseconds();
     }
 
-    @Hook('afterHandle')
-    log({ method }: Request, { pathname }: RequestUrl, { ok, status }: Response, { loggerTimeStart }: Store<{ loggerTimeStart: number; }>) {
-        console[ok ? 'debug' : 'error']('%s %d %s %fms', method, status, pathname, (Bun.nanoseconds() - loggerTimeStart) / 1000000);
+    @Hook('afterResponse')
+    log({ method }: Request, { pathname }: RequestUrl, { status }: ResponseInit, @Store('loggerTimeStart') loggerTimeStart: number) {
+        console[status >= 200 && status < 300 ? 'debug' : 'error']('%s %d %s %fms', method, status, pathname, (Bun.nanoseconds() - loggerTimeStart) / 1000000);
     }
 }
 
 @Controller()
 class JSX {
-    @Hook('mapResponse', { headers: { 'content-type': 'text/html;charset=UTF-8' } })
-    map(response: RawResponse) {
+    @Hook('afterHandle')
+    map(response: RawResponse, set: ResponseInit) {
+        set.headers['content-type'] = 'text/html;charset=UTF-8';
         return `<body>${response}</body>`;
     }
 
@@ -72,12 +73,12 @@ class JSX {
 @Use(Logger)
 @Controller()
 class Main {
-    @Route()
+    @Mount()
     readonly api!: API;
-    @Route()
+    @Mount()
     readonly jsx!: JSX;
 
-    @Route()
+    @Static()
     '/' = 'Hi';
 
     @Route('OPTIONS', '/id/:id', { headers: { 'Access-Control-Allow-Methods': 'GET' } })
@@ -103,7 +104,20 @@ class Main {
 
 Bun.serve({
     routes: routes(Main),
-    fetch(request, server) {
-        return new Response(null, { status: 404 });
-    },
+    // routes: {
+    //     '/ws'(request, server) {
+    //         server.upgrade(request, {
+    //             get data() {
+    //                 console.log('data');
+    //                 this.headers = new Headers();
+    //                 return {};
+    //             },
+    //         });
+    //     },
+    // },
+    // websocket: {
+    //     message(ws, message) {
+
+    //     },
+    // },
 });

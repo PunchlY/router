@@ -1,5 +1,5 @@
 import 'reflect-metadata/lite';
-import { bucket } from './bucket';
+import { bucket } from './util';
 import { type TSchema, Type, TypeGuard } from '@sinclair/typebox';
 import type { TParseOperation } from '@sinclair/typebox/value';
 
@@ -115,26 +115,31 @@ function setParamType(target: object, propertyKey: string | symbol | undefined, 
     paramTypes[index] = { identifier, key, schema, operations };
 }
 
-const injectableFunctionMap = new WeakMap<Function, 'SINGLETON' | 'REQUEST' | 'INSTANCE'>();
+const injectableFunctionMap = new WeakMap<Function, boolean>();
 
-function registerInjectable(constructor: Function, scope: 'SINGLETON' | 'REQUEST' | 'INSTANCE') {
+function registerInjectable(constructor: Function, singleton: boolean) {
     if (typeof constructor !== 'function')
         throw new TypeError();
     if (injectableFunctionMap.has(constructor))
         throw new Error(`Constructor ${constructor.name} is already registered as injectable`);
-    injectableFunctionMap.set(constructor, scope);
+    injectableFunctionMap.set(constructor, singleton);
 }
-function getScope(constructor: Function) {
+function isSingleton(constructor: Function) {
+    if (!injectableFunctionMap.has(constructor))
+        throw new Error(`Constructor ${constructor.name} is not registered as injectable`);
     return injectableFunctionMap.get(constructor);
 }
 
-const injectBucket = bucket(new WeakMap<object, Set<string | symbol>>(), () => new Set());
-function inject(target: object, propertyKey: string | symbol, type: Function) {
+const injectBucket = bucket(new WeakMap<object, Map<string | symbol, Function>>(), () => new Map());
+function inject(target: object, propertyKey: string | symbol): Function {
+    const type = getType(target, propertyKey);
+    if (typeof type !== 'function')
+        throw new TypeError();
     if (injectBucket(target).has(propertyKey))
-        return;
+        return type;
     if (Reflect.getOwnPropertyDescriptor(target, propertyKey))
         throw new TypeError();
-    injectBucket(target).add(propertyKey);
+    injectBucket(target).set(propertyKey, type);
     Object.defineProperty(target, propertyKey, {
         configurable: true,
         get() {
@@ -145,10 +150,11 @@ function inject(target: object, propertyKey: string | symbol, type: Function) {
             return value;
         },
     });
+    return type;
 }
 
 const construct = bucket(new WeakMap<Function, any>(), (constructor) => {
-    if (injectableFunctionMap.get(constructor) !== 'SINGLETON')
+    if (!injectableFunctionMap.get(constructor))
         throw new TypeError();
     return Reflect.construct(constructor, getParamTypes(constructor).map((constructor): any => {
         if (typeof constructor !== 'function')
@@ -159,5 +165,5 @@ const construct = bucket(new WeakMap<Function, any>(), (constructor) => {
 
 export { register };
 export { getType, getParamTypes, setParamType };
-export { construct, registerInjectable, getScope, inject };
+export { construct, registerInjectable, isSingleton, inject };
 export { ParamType };

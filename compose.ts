@@ -1,18 +1,14 @@
 import type { Server, RouterTypes, HTMLBundle, BunRequest } from 'bun';
-import { type Meta, StaticResource, Controller } from './controller';
-import { construct, getParamTypes, getScope, type ParamType } from './service';
+import type { ResponseInit } from './decorators';
+import { $ALL, Controller, HookType, type Handler, type Init } from './controller';
+import { construct, getParamTypes, isSingleton, type ParamType } from './service';
 import { newResponse, parseBody, parseQuery } from './util';
 import { TypeGuard } from '@sinclair/typebox';
 import { Parse } from '@sinclair/typebox/value';
 
 interface Context extends BunRequest {
     _server: Server;
-    _set: {
-        readonly headers: Record<string, string | string[]>;
-        status?: number;
-        statusText?: string;
-    };
-    _rawResponse?: unknown;
+    _set: ResponseInit;
     _response?: Response;
     _url?: URL;
     _query?: Record<string, unknown>;
@@ -24,23 +20,18 @@ interface Context extends BunRequest {
 function* mapParams(ctx: Context, paramtypes: ParamType[]): Generator<unknown> {
     for (const type of paramtypes) {
         if (typeof type === 'function') {
-            switch (getScope(type)) {
-                case 'SINGLETON': {
-                    yield construct(type);
-                } return;
-                case 'REQUEST': if (ctx._instances?.has(type)) {
-                    yield ctx._instances.get(type);
-                } else {
-                    const value = new type(...mapParams(ctx, getParamTypes(type)));
-                    (ctx._instances ??= new WeakMap()).set(type, value);
-                    yield value;
-                } return;
-                case 'INSTANCE': {
-                    yield new type(...mapParams(ctx, getParamTypes(type)));
-                } return;
-                default:
-                    throw new TypeError();
+            if (isSingleton(type)) {
+                yield construct(type);
+                continue;
             }
+            if (ctx._instances?.has(type)) {
+                yield ctx._instances.get(type);
+            } else {
+                const value = new type(...mapParams(ctx, getParamTypes(type)));
+                (ctx._instances ??= new WeakMap()).set(type, value);
+                yield value;
+            }
+            continue;
         }
         let value;
         switch (type.identifier) {
@@ -52,9 +43,6 @@ function* mapParams(ctx: Context, paramtypes: ParamType[]): Generator<unknown> {
             } break;
             case 'server': {
                 value = ctx._server;
-            } break;
-            case 'rawResponse': {
-                value = ctx._rawResponse;
             } break;
             case 'response': {
                 value = ctx._response;
@@ -92,100 +80,184 @@ function* mapParams(ctx: Context, paramtypes: ParamType[]): Generator<unknown> {
 }
 
 type StreamLike = IterableIterator<string | ArrayBuffer | ArrayBufferView<ArrayBufferLike>> | AsyncIterableIterator<string | ArrayBuffer | ArrayBufferView<ArrayBufferLike>>;
-async function onHandle(ctx: Context, { instance, propertyKey, paramtypes, isGenerator, init }: Meta) {
+
+async function onHook(ctx: Context, { instance, propertyKey, paramtypes }: {
+    instance: any;
+    propertyKey: string | symbol;
+    paramtypes: ParamType[];
+}) {
     const res = await instance[propertyKey](...mapParams(ctx, paramtypes));
-    if (isGenerator) {
-        const { value, done } = await (res as StreamLike).next();
-        ctx._rawResponse = done ? value : new ReadableStream({
-            async start(controller) {
-                let end = false;
-                ctx.signal.addEventListener('abort', () => {
-                    end = true;
-                    try { controller.close(); } catch { }
-                });
-                typeof value !== 'undefined' && controller.enqueue(value);
-                for await (const chunk of res as StreamLike) {
-                    if (end)
-                        break;
-                    typeof chunk !== 'undefined' && controller.enqueue(chunk);
-                    await Bun.sleep(0);
-                }
-                try { controller.close(); } catch { }
-            },
-        });
-    } else if (typeof res === 'undefined') {
+    if (typeof res === 'undefined')
         return false;
-    } else {
-        ctx._rawResponse = res;
-    }
-    ctx._set = {
-        ...ctx._set,
-        ...init,
-        headers: { ...ctx._set.headers, ...init.headers },
-    };
+    ctx._response = res;
     return true;
 }
 
-function routes(target: Function) {
-    return Controller.from(target).map((handler) => {
-        if (handler.type === 'Static')
-            return StaticResource(handler);
-        const {
-            bodyPresence,
-            beforeHandle,
-            handle,
-            afterHandle,
-            mapResponse,
-        } = Controller.getMeta(handler);
-        return async (ctx: Context, server: Server) => {
-            let fulfilled = false;
-            ctx._server = server;
-            ctx._set = {
-                headers: {},
-                status: undefined,
-                statusText: undefined
-            };
-            if (bodyPresence)
-                ctx._body = await parseBody(ctx);
-            try {
-                for (const meta of beforeHandle) {
-                    if (await onHandle(ctx, meta)) {
-                        ctx._response = newResponse(ctx._rawResponse, ctx._set);
-                        ctx._rawResponse = undefined;
-                        fulfilled = true;
-                        return ctx._response;
-                    }
-                }
-                if (await onHandle(ctx, handle)) {
-                    for (const meta of mapResponse)
-                        await onHandle(ctx, meta);
-                    ctx._response = newResponse(ctx._rawResponse, ctx._set);
-                    ctx._rawResponse = undefined;
-                    fulfilled = true;
-                    return ctx._response;
-                }
-                ctx._set.status = 404;
-                ctx._response = newResponse(null, ctx._set);
-                ctx._rawResponse = undefined;
-                fulfilled = true;
-                return ctx._response;
-            } finally {
-                if (fulfilled) {
-                    ctx._set = { headers: {} }, fulfilled = false;
-                    for (const meta of afterHandle) {
-                        if (!await onHandle(ctx, meta))
-                            continue;
-                        ctx._response = newResponse(ctx._rawResponse, ctx._set);
-                        ctx._rawResponse = undefined;
-                        ctx._set = { headers: {} };
-                        fulfilled = true;
-                    }
-                    if (fulfilled)
-                        return ctx._response!;
-                }
-            }
+function checkBodyPresence(paramtypes: Iterable<ParamType>, checked = new Set<Function>()) {
+    for (const type of paramtypes) {
+        if (typeof type === 'function') {
+            if (checked.has(type))
+                continue;
+            checked.add(type);
+            if (checkBodyPresence(getParamTypes(type), checked))
+                return true;
+            continue;
+        }
+        if (type.identifier === 'body')
+            return true;
+    }
+    return false;
+}
+
+function buildHandler({ type, controller: { target }, propertyKey, init, use }: Handler) {
+    const instance = construct(target);
+    const paramtypes = type === 'Accessor' ? undefined : getParamTypes(target.prototype, propertyKey);
+    const set = use.reduceRight<Init>((previous, { controller: { global }, init }) => {
+        return {
+            ...previous,
+            ...global?.init,
+            ...init,
+            headers: {
+                ...previous?.headers,
+                ...global?.init?.headers,
+                ...init?.headers,
+            },
         };
-    }) as Record<`/${string}`, (HTMLBundle & Response) | Response | RouterTypes.RouteHandler<string> | RouterTypes.RouteHandlerObject<string>>;
+    }, {});
+    const hooks = (Object.fromEntries as {
+        <K extends PropertyKey, T>(entries: Iterable<readonly [K, T]>): { [k in K]: T; };
+    })(HookType.map((name) => {
+        return [name, Controller.hooks(use, name).map(({ controller: { target }, propertyKey }) => {
+            return {
+                instance: construct(target),
+                propertyKey,
+                paramtypes: getParamTypes(target.prototype, propertyKey),
+            };
+        }).toArray()] as const;
+    }));
+    const bodyPresence = checkBodyPresence(new Set([
+        ...paramtypes ?? [],
+        ...Object.values(hooks).flat().flatMap(({ paramtypes }) => paramtypes),
+    ]));
+    return async (ctx: Context, server: Server) => {
+        ctx._server = server;
+        ctx._set = {
+            status: 200,
+            ...set,
+            headers: { ...set.headers },
+        };
+        let response: Response;
+        try {
+            RES: {
+                for (const meta of hooks.request) {
+                    if (await onHook(ctx, meta))
+                        break RES;
+                }
+                if (bodyPresence) PARSE: {
+                    for (const { instance, propertyKey, paramtypes } of hooks.parse) {
+                        const value = await instance[propertyKey](...mapParams(ctx, paramtypes!));
+                        if (typeof (ctx._body = value) !== 'undefined')
+                            break PARSE;
+                    }
+                    ctx._body = await parseBody(ctx);
+                }
+                for (const meta of hooks.beforeHandle) {
+                    if (await onHook(ctx, meta))
+                        break RES;
+                }
+                if (init) {
+                    ctx._set = {
+                        ...ctx._set,
+                        ...init,
+                        headers: {
+                            ...ctx._set?.headers,
+                            ...init?.headers,
+                        },
+                    };
+                }
+                if (!paramtypes) {
+                    ctx._response = instance[propertyKey];
+                } else {
+                    const res = await instance[propertyKey](...mapParams(ctx, paramtypes));
+                    if (type === 'Generator') {
+                        const { value, done } = await (res as StreamLike).next();
+                        ctx._response = done ? value : new ReadableStream({
+                            async start(controller) {
+                                let end = false;
+                                ctx.signal.addEventListener('abort', () => {
+                                    end = true;
+                                    try { controller.close(); } catch { }
+                                });
+                                typeof value !== 'undefined' && controller.enqueue(value);
+                                for await (const chunk of res as StreamLike) {
+                                    if (end)
+                                        break;
+                                    typeof chunk !== 'undefined' && controller.enqueue(chunk);
+                                    await Bun.sleep(0);
+                                }
+                                try { controller.close(); } catch { }
+                            },
+                        });
+                    } else if (typeof res === 'undefined') {
+                        throw new Error();
+                    } else {
+                        ctx._response = res;
+                    }
+                }
+                for (const meta of hooks.afterHandle)
+                    await onHook(ctx, meta);
+            }
+            for (const meta of hooks.mapResponse)
+                if (await onHook(ctx, meta))
+                    break;
+            return response = newResponse(ctx._response, ctx._set);
+        } finally {
+            if (hooks.afterResponse.length) {
+                const { status, statusText, headers } = response!;
+                ctx._response = undefined;
+                ctx._set = { status, statusText, headers: Object.fromEntries(headers) };
+                process.nextTick(async () => {
+                    for (const { instance, propertyKey, paramtypes } of hooks.afterResponse)
+                        await instance[propertyKey](...mapParams(ctx, paramtypes!));
+                });
+            }
+        }
+    };
+}
+
+function routes(target: Function) {
+    const controller = Controller.from(target);
+    return Object.fromEntries(controller.routes().map(([path, route]) => {
+        if (route instanceof Map) {
+            const handlers = new Map(route.entries().map(([method, handler]) => {
+                return [method, buildHandler(handler)] as const;
+            }));
+            const defaultHandler = handlers.get($ALL);
+            return [path, (ctx: Context, server: Server) => {
+                const handler = handlers.get(ctx.method as Uppercase<string>) ?? defaultHandler;
+                if (handler)
+                    return handler(ctx, server);
+                return new Response(null, { status: 404 });
+            }];
+        } else {
+            const { controller: { target }, propertyKey, init, use } = route;
+            const value = construct(target)[propertyKey];
+            if (typeof value === 'object' && 'index' in value)
+                return [path, value as import('bun').HTMLBundle] as const;
+            return [path, newResponse(value, use.reduceRight((previous, { controller: { global }, init }) => {
+                return {
+                    ...previous,
+                    ...global?.init,
+                    ...init,
+                    headers: {
+                        ...previous?.headers,
+                        ...global?.init?.headers,
+                        ...init?.headers,
+                    },
+                };
+            }, init))] as const;
+        }
+    })) as Record<`/${string}`, (HTMLBundle & Response) | Response | RouterTypes.RouteHandler<string> | RouterTypes.RouteHandlerObject<string>>;
 }
 
 export { routes };
