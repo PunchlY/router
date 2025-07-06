@@ -90,7 +90,7 @@ class Controller {
                 throw new Error('Route already exists for this method');
             }
         } else {
-            route = new Map();
+            this.#routes.set(path, route = new Map());
         }
         route.set(method, value);
     }
