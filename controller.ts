@@ -81,14 +81,18 @@ class Controller {
             this.#routes.set(path, value);
             return;
         }
-        const route = this.#routes.get(path);
-        if (route instanceof Map) {
-            if (route.has(method))
+        let route = this.#routes.get(path);
+        if (this.#routes.has(path)) {
+            if (route instanceof Map) {
+                if (route.has(method))
+                    throw new Error('Route already exists for this method');
+            } else {
                 throw new Error('Route already exists for this method');
-            route.set(method, value);
-            return;
+            }
+        } else {
+            route = new Map();
         }
-        throw new Error('Route already exists for this method');
+        route.set(method, value);
     }
 
     *routes() {
