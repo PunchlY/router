@@ -9,7 +9,7 @@ import { Parse } from '@sinclair/typebox/value';
 interface Context extends BunRequest {
     _server: Server;
     _set: ResponseInit;
-    _response?: Response;
+    _response?: unknown;
     _url?: URL;
     _query?: Record<string, unknown>;
     _body?: unknown;
@@ -44,7 +44,7 @@ function* mapParams(ctx: Context, paramtypes: ParamType[]): Generator<unknown> {
             case 'server': {
                 value = ctx._server;
             } break;
-            case 'response': {
+            case 'rawResponse': {
                 value = ctx._response;
             } break;
             case 'responseInit': {
